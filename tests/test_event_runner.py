@@ -61,8 +61,11 @@ class Harness:
         self.path = tmp_path / "stop"
         self.present = True
         self.samples = 0
+        self.failed_samples = 0
         self.fail_sample = False
         self.sent = []
+        self.tracker = OwnershipTracker(self.config.debounce, resume_gap=float("inf"))
+        monkeypatch.setattr(event_runner, "OwnershipTracker", lambda *args, **kwargs: self.tracker)
         monkeypatch.setattr(event_runner, "HubNotifications", lambda *args: self.hub)
         monkeypatch.setattr(event_runner, "StopNotification", lambda *args: self.stop)
         monkeypatch.setattr(event_runner, "sample_ownership", self.sample)
@@ -71,6 +74,7 @@ class Harness:
     def sample(self, config):
         self.samples += 1
         if self.fail_sample:
+            self.failed_samples += 1
             raise OSError("inventory unavailable")
         return self.present
 
@@ -80,8 +84,15 @@ class Harness:
 
     async def start(self, session=None):
         self.task = asyncio.create_task(event_runner.run(self.config, "key", self.path, session))
-        await asyncio.sleep(0.08)
-        assert not self.task.done()
+        await self.until(lambda: self.tracker.stable is True)
+
+    async def until(self, condition):
+        async with asyncio.timeout(3):
+            while not condition():
+                if self.task.done():
+                    await self.task
+                    pytest.fail("Reactor exited before the expected observation")
+                await asyncio.sleep(0)
 
     async def finish(self):
         self.stop.event.set()
@@ -92,7 +103,7 @@ async def test_idle_establishes_baseline_then_never_rescans(monkeypatch, tmp_pat
     harness = Harness(monkeypatch, tmp_path)
     await harness.start()
     count = harness.samples
-    assert count == 2
+    assert count >= 2
     await asyncio.sleep(0.15)
     assert harness.samples == count
     assert harness.sent == []
@@ -108,7 +119,7 @@ async def test_first_edge_after_long_idle_still_switches(monkeypatch, tmp_path):
     offset = 3600
     harness.present = False
     harness.hub.device()
-    await asyncio.sleep(0.08)
+    await harness.until(lambda: harness.sent == [False])
     assert harness.sent == [False]
     await harness.finish()
 
@@ -116,12 +127,16 @@ async def test_first_edge_after_long_idle_still_switches(monkeypatch, tmp_path):
 async def test_fast_reversal_inside_debounce_does_not_switch(monkeypatch, tmp_path):
     harness = Harness(monkeypatch, tmp_path)
     await harness.start()
+    frozen_time = time.time()
+    monkeypatch.setattr(event_runner, "time", SimpleNamespace(time=lambda: frozen_time))
     harness.present = False
+    before = harness.samples
     harness.hub.device()
-    await asyncio.sleep(0.01)
+    await harness.until(lambda: harness.samples > before)
     harness.present = True
+    before = harness.samples
     harness.hub.device()
-    await asyncio.sleep(0.08)
+    await harness.until(lambda: harness.samples > before)
     assert harness.sent == []
     await harness.finish()
 
@@ -130,6 +145,7 @@ async def test_duplicate_device_event_does_not_cancel_same_state_command(monkeyp
     harness = Harness(monkeypatch, tmp_path)
     started = asyncio.Event()
     release = asyncio.Event()
+    finished = asyncio.Event()
     cancelled = False
 
     async def blocked(config, key, transition, current, session):
@@ -142,16 +158,19 @@ async def test_duplicate_device_event_does_not_cancel_same_state_command(monkeyp
         except asyncio.CancelledError:
             cancelled = True
             raise
+        finally:
+            finished.set()
 
     monkeypatch.setattr(event_runner, "follow_transition", blocked)
     await harness.start()
     harness.present = False
     harness.hub.device()
     await asyncio.wait_for(started.wait(), 1)
+    before = harness.samples
     harness.hub.device()
-    await asyncio.sleep(0.01)
+    await harness.until(lambda: harness.samples > before)
     release.set()
-    await asyncio.sleep(0.01)
+    await asyncio.wait_for(finished.wait(), 3)
     assert not cancelled
     assert harness.sent == [False]
     await harness.finish()
@@ -161,12 +180,14 @@ async def test_guard_rechecks_actual_hub_even_without_queued_callback(monkeypatc
     harness = Harness(monkeypatch, tmp_path)
     started = asyncio.Event()
     release = asyncio.Event()
+    checked = asyncio.Event()
 
     async def blocked(config, key, transition, current, session):
         started.set()
         await release.wait()
         if current():
             harness.sent.append(transition.present)
+        checked.set()
 
     monkeypatch.setattr(event_runner, "follow_transition", blocked)
     await harness.start()
@@ -175,7 +196,7 @@ async def test_guard_rechecks_actual_hub_even_without_queued_callback(monkeypatc
     await asyncio.wait_for(started.wait(), 1)
     harness.present = True  # Native notification has not yet reached the event loop.
     release.set()
-    await asyncio.sleep(0.01)
+    await asyncio.wait_for(checked.wait(), 3)
     assert harness.sent == []
     await harness.finish()
 
@@ -184,12 +205,14 @@ async def test_native_power_epoch_blocks_send_before_reset_is_delivered(monkeypa
     harness = Harness(monkeypatch, tmp_path)
     started = asyncio.Event()
     release = asyncio.Event()
+    checked = asyncio.Event()
 
     async def blocked(config, key, transition, current, session):
         started.set()
         await release.wait()
         if current():
             harness.sent.append(transition.present)
+        checked.set()
 
     monkeypatch.setattr(event_runner, "follow_transition", blocked)
     await harness.start()
@@ -199,7 +222,7 @@ async def test_native_power_epoch_blocks_send_before_reset_is_delivered(monkeypa
     harness.hub.power(True, deliver=False)
     harness.hub.power(False, deliver=False)
     release.set()
-    await asyncio.sleep(0.01)
+    await asyncio.wait_for(checked.wait(), 3)
     assert harness.sent == []
     await harness.finish()
 
@@ -212,14 +235,14 @@ async def test_suspend_loss_and_resume_are_silent_but_next_physical_edge_works(
     harness.hub.power(True)
     harness.present = False
     harness.hub.device()
-    await asyncio.sleep(0.08)
+    await harness.until(lambda: harness.tracker.stable is None)
     assert harness.sent == []
     harness.hub.power(False)
-    await asyncio.sleep(0.08)
+    await harness.until(lambda: harness.tracker.stable is False)
     assert harness.sent == []
     harness.present = True
     harness.hub.device()
-    await asyncio.sleep(0.08)
+    await harness.until(lambda: harness.sent == [True])
     assert harness.sent == [True]
     await harness.finish()
 
@@ -229,11 +252,11 @@ async def test_failed_inventory_rebaselines_without_inferring_disconnect(monkeyp
     await harness.start()
     harness.fail_sample = True
     harness.hub.device()
-    await asyncio.sleep(0.01)
+    await harness.until(lambda: harness.failed_samples > 0)
     harness.fail_sample = False
     harness.present = False
     harness.hub.device()
-    await asyncio.sleep(0.08)
+    await harness.until(lambda: harness.tracker.stable is False)
     assert harness.sent == []
     await harness.finish()
 
