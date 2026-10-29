@@ -1,5 +1,9 @@
 # Continue on the Mac
 
+This part is optional: the Windows helper can select the Mac on USB removal and
+select Windows on arrival, while the PC is awake. A Mac helper lets the Mac claim
+its own input independently when the PC is asleep or off.
+
 The Mac implementation is built alongside Windows, but the author's physical Mac
 has not been available for installation or USB-switch verification. CI checks on
 an Apple Silicon runner are not a substitute for testing the actual switch.
@@ -19,7 +23,7 @@ an Apple Silicon runner are not a substitute for testing the actual switch.
    Verify that the correct HDMI appears once per switch. Check TV-unreachable
    behavior, fast switches, keyboard unplug/replug and sleep/wake.
 6. Install the login entry only after the interactive tests pass. Test a fresh
-   login, and test stop/removal. Do not approve the PR solely on CI results.
+   login, and test stop/removal. Do not claim Mac hardware support based solely on CI.
 
 The macOS login entry is a user LaunchAgent named `org.loftspace.hdmi-follow` in
 `~/Library/LaunchAgents`. It runs the same virtual-environment interpreter or

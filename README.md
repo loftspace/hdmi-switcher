@@ -13,7 +13,8 @@ account, and no admin access for normal use.
 
 - Stable device arrival selects this computer's HDMI input.
 - Optional device removal selects the other computer's input. This lets Windows
-  switch to a Mac before a helper is installed on the Mac.
+  handle both directions on its own while the Windows PC is awake. A Mac helper
+  is optional, useful when the Windows PC is asleep or switched off.
 - Debounces reconnection, combines logical HID interfaces, cancels obsolete
   requests and limits retries. Initial startup and resume establish a silent
   baseline so launching the helper does not take the screen from another input.
