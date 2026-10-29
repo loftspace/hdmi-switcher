@@ -6,6 +6,9 @@ webOS LAN input selection. Never read HID input reports or capture keystrokes.
 ## Architecture
 - `ownership.py`: pure debounce/generation state machine. Initial state is silent.
 - `devices.py`: HID enumeration on the main thread. Never open devices.
+- `windows_usb.py`: native present USB instance inventory; failures are unknown,
+  never a disconnect. Hub mode never falls back to HID.
+- `tv_session.py`: one reusable connection, unique IDs, idle health and cancellation.
 - `tv.py`: bounded async SSAP with explicit pairing and stale-ownership guard.
 - `runner.py`: poll, cancel obsolete work, bound retries; never replay old events.
 - `config.py`, `instance.py`, `autostart.py`, `cli.py`: local lifecycle.
@@ -29,3 +32,5 @@ webOS LAN input selection. Never read HID input reports or capture keystrokes.
 ## Verification
 Test startup baseline, bounce, resume, disconnect, auth failure and cancellation.
 Test Windows-to-Mac loss mode separately from Mac arrival mode. No credential logs.
+Hub mode requires physical switch/keyboard-only unplug tests. An entire switch
+unplug cannot be distinguished from switch-button removal by hub presence alone.

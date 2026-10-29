@@ -23,6 +23,7 @@ from hdmi_follow.config import (
 from hdmi_follow.devices import enumerate_devices
 from hdmi_follow.instance import AlreadyRunning, instance_lock
 from hdmi_follow.runner import run
+from hdmi_follow.tv_session import Session
 
 
 def device_arg(value: str) -> Device:
@@ -49,6 +50,7 @@ def parser() -> argparse.ArgumentParser:
         "install",
         "uninstall",
         "devices",
+        "usb-instances",
         "diagnose",
     ):
         command = sub.add_parser(name)
@@ -59,7 +61,8 @@ def parser() -> argparse.ArgumentParser:
             command.add_argument(
                 "--away-input", help="Optional: select peer HDMI when devices leave"
             )
-            command.add_argument("--device", action="append", type=device_arg, required=True)
+            command.add_argument("--device", action="append", type=device_arg)
+            command.add_argument("--switch-hub", help="Full Windows USB switch hub instance ID")
             command.add_argument("--overwrite", action="store_true")
         if name == "pair":
             command.add_argument(
@@ -71,15 +74,26 @@ def parser() -> argparse.ArgumentParser:
             command.add_argument("input", choices=[f"HDMI_{i}" for i in range(1, 5)])
         if name == "diagnose":
             command.add_argument("--seconds", type=int, default=30)
+            command.add_argument("--switch-hub", help="Monitor only this Windows USB hub instance")
     return result
 
 
-def diagnostic(seconds: int) -> None:
+def diagnostic(seconds: int, switch_hub: str | None = None) -> None:
     if not 1 <= seconds <= 3600:
         raise ValueError("Diagnostic duration must be 1..3600 seconds")
     last: set[tuple[int, int]] | None = None
     end = time.monotonic() + seconds
+    last_hub: bool | None = None
     while time.monotonic() < end:
+        if switch_hub:
+            from hdmi_follow.windows_usb import is_present
+
+            hub = is_present(switch_hub)
+            if hub != last_hub:
+                print(f"{time.time():.3f} Switch hub present: {hub}", flush=True)
+                last_hub = hub
+            time.sleep(0.05)
+            continue
         seen = {(d.vendor_id, d.product_id) for d in enumerate_devices()}
         if last is None:
             print("Baseline:", " ".join(f"{v:04x}:{p:04x}" for v, p in sorted(seen)))
@@ -99,18 +113,33 @@ def _logging(path: Path) -> None:
 
 def execute(args: argparse.Namespace) -> None:
     path: Path = args.config.expanduser().resolve()
+    if args.command == "usb-instances":
+        from hdmi_follow.windows_usb import present_instances
+
+        print("\n".join(sorted(present_instances())))
+        return
     if args.command == "devices":
         unique = {(d.vendor_id, d.product_id, d.name) for d in enumerate_devices()}
         for vendor, product, name in sorted(unique):
             print(f"{vendor:04x}:{product:04x}  {name}")
         return
     if args.command == "diagnose":
-        diagnostic(args.seconds)
+        diagnostic(args.seconds, args.switch_hub)
         return
     if args.command == "setup":
+        if args.switch_hub and sys.platform != "win32":
+            raise RuntimeError(
+                "Switch-hub detection is Windows-only; use --device on this platform"
+            )
         if path.exists() and not args.overwrite:
             raise ValueError("Configuration exists. Use --overwrite to replace it explicitly")
-        Config(args.tv_ip, args.own_input, tuple(args.device), args.away_input).save(path)
+        Config(
+            args.tv_ip,
+            args.own_input,
+            tuple(args.device or []),
+            args.away_input,
+            switch_hub=args.switch_hub,
+        ).save(path)
         print(f"Saved {path}. Pair the TV before starting the helper")
         return
     if args.command == "uninstall":
@@ -134,6 +163,14 @@ def execute(args: argparse.Namespace) -> None:
         print(autostart.status())
         return
     config = Config.load(path)
+    if (
+        config.switch_hub
+        and sys.platform != "win32"
+        and args.command in {"run", "start", "install"}
+    ):
+        raise RuntimeError(
+            "Switch-hub detection is Windows-only; configure --device on this platform"
+        )
     credentials = key_path(path)
     key = load_key(credentials, config.tv_ip)
     if args.command == "pair":
@@ -201,7 +238,14 @@ def execute(args: argparse.Namespace) -> None:
         with instance_lock(path.with_name("run.lock")):
             path.with_name("stop").unlink(missing_ok=True)
             _logging(path.parent / "follow.log")
-            asyncio.run(run(config, key, stop_file=path.with_name("stop")))
+            asyncio.run(
+                run(
+                    config,
+                    key,
+                    stop_file=path.with_name("stop"),
+                    session=Session(config.tv_ip, key),
+                )
+            )
 
 
 def main() -> None:

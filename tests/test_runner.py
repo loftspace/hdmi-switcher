@@ -120,7 +120,9 @@ async def test_watcher_cancels_active_command_on_first_loss_sample(monkeypatch) 
 
     switch = AsyncMock(side_effect=blocked_switch)
     monkeypatch.setattr(runner, "enumerate_devices", enumerate_fake)
-    monkeypatch.setattr(runner, "time", SimpleNamespace(time=lambda: clock))
+    monkeypatch.setattr(
+        runner, "time", SimpleNamespace(time=lambda: clock, perf_counter=lambda: clock)
+    )
     monkeypatch.setattr(
         runner,
         "asyncio",
@@ -165,7 +167,9 @@ async def test_stop_file_cancels_active_switch_before_run_returns(monkeypatch, t
 
     switch = AsyncMock(side_effect=blocked_switch)
     monkeypatch.setattr(runner, "enumerate_devices", enumerate_fake)
-    monkeypatch.setattr(runner, "time", SimpleNamespace(time=lambda: clock))
+    monkeypatch.setattr(
+        runner, "time", SimpleNamespace(time=lambda: clock, perf_counter=lambda: clock)
+    )
     monkeypatch.setattr(
         runner,
         "asyncio",

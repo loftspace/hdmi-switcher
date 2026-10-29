@@ -3,6 +3,7 @@
 import ipaddress
 import json
 import os
+import re
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -42,8 +43,9 @@ class Config:
     own_input: str
     devices: tuple[Device, ...]
     away_input: str | None = None
-    debounce: float = 1.0
-    poll_interval: float = 0.5
+    debounce: float = 0.2
+    poll_interval: float = 0.1
+    switch_hub: str | None = None
 
     def __post_init__(self) -> None:
         ip = ipaddress.ip_address(self.tv_ip)
@@ -56,15 +58,26 @@ class Config:
             raise ValueError("Inputs must be HDMI_1 through HDMI_4")
         if self.own_input == self.away_input:
             raise ValueError("Own and away inputs must differ")
-        if not self.devices:
-            raise ValueError("Select at least one USB device")
-        if not 0.3 <= self.debounce <= 10 or not 0.1 <= self.poll_interval <= 2:
-            raise ValueError("Debounce must be 0.3..10s and polling must be 0.1..2s")
+        if self.switch_hub is not None and (
+            not isinstance(self.switch_hub, str)
+            or not re.fullmatch(
+                r"USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}[^\\]*\\[^\r\n\x00]+",
+                self.switch_hub,
+                re.IGNORECASE,
+            )
+        ):
+            raise ValueError("Switch hub must be a full USB device instance ID")
+        if not self.devices and not self.switch_hub:
+            raise ValueError("Select a switch hub or at least one USB device")
+        if self.devices and self.switch_hub:
+            raise ValueError("Choose switch-hub mode or keyboard mode, not both")
+        if not 0.05 <= self.debounce <= 10 or not 0.02 <= self.poll_interval <= 2:
+            raise ValueError("Debounce must be 0.05..10s and polling must be 0.02..2s")
 
     @classmethod
     def load(cls, path: Path) -> "Config":
         raw = json.loads(path.read_text(encoding="utf-8"))
-        return cls(**{**raw, "devices": tuple(Device(**d) for d in raw["devices"])})
+        return cls(**{**raw, "devices": tuple(Device(**d) for d in raw.get("devices", []))})
 
     def save(self, path: Path) -> None:
         write_private_json(path, asdict(self))

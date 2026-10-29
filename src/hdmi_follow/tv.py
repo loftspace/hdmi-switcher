@@ -8,6 +8,8 @@ from typing import Any
 
 from websockets.asyncio.client import ClientConnection, connect
 
+from hdmi_follow import __version__
+
 
 class TVError(Exception):
     pass
@@ -23,7 +25,7 @@ class StaleRequest(TVError):
 
 MANIFEST = {
     "manifestVersion": 1,
-    "appVersion": "0.1.0",
+    "appVersion": __version__,
     "appId": "org.loftspace.hdmifollow",
     "vendorId": "loftspace",
     "localizedAppNames": {"": "HDMI Follow"},

@@ -4,26 +4,32 @@
 
 [![CI](https://github.com/loftspace/hdmi-follow/actions/workflows/ci.yml/badge.svg)](https://github.com/loftspace/hdmi-follow/actions/workflows/ci.yml)
 
-A small background helper for Windows and macOS. It observes whether selected
-keyboard/mouse USB devices are connected, then selects an LG webOS HDMI input
+A small background helper for Windows and macOS. On Windows it can observe the
+USB switch's own upstream hub, then select an LG webOS HDMI input
 over your local network. No extra TV modification, no keystroke capture, no cloud
 account, and no admin access for normal use.
 
 ## What it does
 
-- Stable device arrival selects this computer's HDMI input.
+- Stable switch-hub arrival selects this computer's HDMI input. Keyboard-only
+  mode remains available explicitly for switches without a usable hub signal.
 - Optional device removal selects the other computer's input. This lets Windows
   handle both directions on its own while the Windows PC is awake. A Mac helper
   is optional, useful when the Windows PC is asleep or switched off.
+- Reuses an authenticated TV connection instead of reconnecting on every switch.
 - Debounces reconnection, combines logical HID interfaces, cancels obsolete
   requests and limits retries. Initial startup and resume establish a silent
   baseline so launching the helper does not take the screen from another input.
 - Offers pairing, diagnostics, start/stop, status and per-user login startup.
 
-The USB switch must actually reconnect devices between computers. A switch that
-emulates permanently connected devices may not provide a detectable signal.
-Unplugging the selected devices also counts as removal. Turning off a wireless
-keyboard may not remove its USB receiver.
+Hub mode must be physically verified with your switch: its upstream hub must
+disconnect from one host and reconnect to the other when the button is pressed.
+Unplugging a keyboard downstream does not change hub ownership. Unplugging or
+powering off the whole switch still looks like hub removal; this is not a literal
+button-click API. Never fall back silently from hub mode to keyboard mode.
+
+Keyboard mode detects the selected peripherals instead. Unplugging those
+peripherals can switch inputs, so it is unsuitable when that behavior is unwanted.
 
 ## Install from source
 
@@ -43,6 +49,29 @@ second provides login startup without a console window. Builds are unsigned;
 the macOS binary is not notarized.
 
 ## Set up Windows-to-Mac
+
+For Windows switch-hub mode, first identify the hub instance in Device Manager
+or `uv run hdmi-follow usb-instances`. That command lists all present USB device
+instances, not just hubs. Confirm it is the switch's hub, then test it:
+
+```powershell
+uv run hdmi-follow diagnose --seconds 60 --switch-hub 'USB\VID_0557&PID_2414\YOUR_INSTANCE'
+```
+
+Unplug/replug only the keyboard: the hub must remain present. Press the switch
+button to the other host and back: the hub must disappear and return. If it does
+not, this detection mode is unsupported by that switch. After verifying, configure:
+
+```powershell
+uv run hdmi-follow setup --tv-ip 192.168.0.20 --own-input HDMI_1 --away-input HDMI_2 --switch-hub 'USB\VID_0557&PID_2414\YOUR_INSTANCE'
+```
+
+Hub mode uses native Windows Configuration Manager inventory, with no device
+handles, drivers, administrator rights or PowerShell polling. It matches the
+full instance identity; moving the upstream cable to another PC port can change
+that identity and requires reconfiguration. Hub mode is Windows-only.
+
+For explicit keyboard/receiver mode:
 
 Find the devices that really move through your switch:
 
@@ -117,7 +146,11 @@ an obsolete key; the background helper will not wait for approval or keep retryi
 
 No claim of instant or atomic switching: an input command already delivered to
 the TV cannot be recalled, and USB enumeration has a polling interval. A stable
-transition normally takes about one second plus TV/network response time.
+transition uses a 0.2-second stabilization period and 0.1-second polling by
+default, followed by TV/network response and HDMI display negotiation. A warm
+connection avoids the first authentication handshake. After a disconnect or TV
+standby, the next command may need a fresh connection. Idle ping/pong checks run
+every five seconds; retries are bounded and canceled when ownership changes.
 HID enumeration failure or a long sleep/resume gap resets the baseline silently.
 This avoids stale takeovers but can intentionally miss a switch during recovery.
 The helper must be running on an awake computer to observe USB changes.
