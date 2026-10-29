@@ -42,3 +42,26 @@ Real total button-to-picture latency must be measured on the hardware.
 
 The previous version's physical round trip does not prove this new hub signal.
 Do not mark the new hardware gate passed until its diagnostic events are captured.
+
+## Verified hardware results (2026-10-29)
+
+The separate diagnostic captured keyboard removal with the hub still present.
+Button PC -> Mac removed the hub; returning to Windows restored it about 0.8s
+before keyboard enumeration finished. This verified the upstream hub signal.
+
+Installed and activated 0.1.1 in switch-hub mode, with the exact local hub instance
+in machine-local configuration and no selected keyboard identities. Login startup
+was re-enabled. The user repeated the test with the new helper running and
+confirmed: keyboard unplug caused no switch; the physical button did switch.
+
+The diagnostic and helper logs agree:
+
+- Keyboard-only removal/reconnection produced no HDMI command.
+- Observed hub departure to HDMI 2 acknowledgement: approximately 0.39s.
+- Observed hub arrival to HDMI 1 acknowledgement: approximately 0.22s.
+- TV command itself: 78ms for HDMI 2 and 28ms for HDMI 1 in that physical test.
+- Separate warm same-input command benchmark: 27ms, 41ms and 39ms.
+
+These are software observation-to-acknowledgement timings, with diagnostic
+sampling uncertainty, not button-contact-to-visible-picture measurements.
+The TV's picture lock/HDMI negotiation remains outside this measurement.

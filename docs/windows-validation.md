@@ -41,3 +41,13 @@ helper is running. Mac-side runtime testing is deferred; this does not invalidat
 the verified Windows-only round trip.
 
 No TV privacy settings were modified by HDMI Follow.
+
+## 0.1.1 switch-hub refinement
+
+The new upstream-hub signal was separately validated on hardware, then the native
+0.1.1 branch build was installed and activated. Keyboard-only unplug/replug no
+longer switches the input; pressing the switch selects Mac and then Windows.
+User confirmation matches the captured hub and helper events. Login startup is
+enabled. See [switch-hub investigation](switch-hub-investigation.md) for timing
+measurements and the whole-switch-unplug limitation. The updated suite has 107
+passing tests; Ruff and strict mypy pass.
