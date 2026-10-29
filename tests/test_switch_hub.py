@@ -6,7 +6,7 @@ from hdmi_follow import runner, windows_usb
 from hdmi_follow.config import Config, default_config
 from hdmi_follow.ownership import Transition
 
-HUB = r"USB\VID_0557&PID_2414\A&2648020B&0&9"
+HUB = r"USB\VID_0557&PID_2414\TEST_INSTANCE"
 
 
 @pytest.fixture

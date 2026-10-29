@@ -5,7 +5,7 @@ import pytest
 
 from hdmi_follow import windows_usb
 
-HUB = r"USB\VID_0557&PID_2414\A&2648020B&0&9"
+HUB = r"USB\VID_0557&PID_2414\TEST_INSTANCE"
 
 
 class FakeNative:
@@ -51,7 +51,7 @@ def test_exact_instance_match_does_not_confuse_other_same_vid_device(monkeypatch
     assert windows_usb.is_present(HUB.lower())
     assert not windows_usb.is_present(HUB + "1")
     assert not windows_usb.is_present(r"USB\VID_0557&PID_2414")
-    assert not windows_usb.is_present(HUB.replace("0&9", "0&8"))
+    assert not windows_usb.is_present(HUB.replace("TEST_INSTANCE", "OTHER_INSTANCE"))
 
 
 def test_empty_present_list_is_valid(monkeypatch):
