@@ -77,6 +77,11 @@ async def follow_transition(
 async def run(
     config: Config, key: str, stop_file: Path | None = None, session: Session | None = None
 ) -> None:
+    if config.switch_hub:
+        from hdmi_follow.event_runner import run as run_events
+
+        await run_events(config, key, stop_file, session)
+        return
     tracker = OwnershipTracker(config.debounce)
     pending: asyncio.Task[None] | None = None
     warm = asyncio.create_task(session.keep_warm()) if session is not None else None

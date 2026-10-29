@@ -10,7 +10,10 @@ webOS LAN input selection. Never read HID input reports or capture keystrokes.
   never a disconnect. Hub mode never falls back to HID.
 - `tv_session.py`: one reusable connection, unique IDs, idle health and cancellation.
 - `tv.py`: bounded async SSAP with explicit pairing and stale-ownership guard.
-- `runner.py`: poll, cancel obsolete work, bound retries; never replay old events.
+- `runner.py`: portable polling, cancel obsolete work, bound retries.
+- `event_runner.py`: Windows hub reactor, native USB/power/stop notifications.
+- `windows_notifications.py`, `windows_stop.py`: native callbacks must remain
+  rooted until successful synchronous unregister. No idle polling in hub mode.
 - `config.py`, `instance.py`, `autostart.py`, `cli.py`: local lifecycle.
 - Secrets and machine-specific configurations stay outside Git.
 - Do not change TV privacy settings, wake the TV, or infer HDMI mapping silently.

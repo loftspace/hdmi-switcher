@@ -50,3 +50,21 @@ def test_frozen_background_child_resets_packager_environment(tmp_path, monkeypat
     cli.execute(cli.parser().parse_args(["start", "--config", str(path)]))
     assert calls[0][1]["env"]["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
     assert "-m" not in calls[0][0][0]
+
+
+def test_windows_stop_persists_marker_before_signaling(tmp_path, monkeypatch):
+    from hdmi_follow import windows_stop
+
+    path = tmp_path / "profile" / "config.json"
+    calls = []
+
+    def signal(stop_file):
+        assert stop_file == path.with_name("stop")
+        assert stop_file.exists()
+        calls.append(stop_file)
+        return True
+
+    monkeypatch.setattr(cli.sys, "platform", "win32")
+    monkeypatch.setattr(windows_stop, "signal_stop", signal)
+    cli.execute(cli.parser().parse_args(["stop", "--config", str(path)]))
+    assert len(calls) == 1

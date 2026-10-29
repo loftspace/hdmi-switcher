@@ -2,7 +2,7 @@
 
 **Press your USB switch. Let your LG TV follow.**
 
-[![CI](https://github.com/loftspace/hdmi-follow/actions/workflows/ci.yml/badge.svg)](https://github.com/loftspace/hdmi-follow/actions/workflows/ci.yml)
+[![CI](https://github.com/loftspace/hdmi-switcher/actions/workflows/ci.yml/badge.svg)](https://github.com/loftspace/hdmi-switcher/actions/workflows/ci.yml)
 
 A small background helper for Windows and macOS. On Windows it can observe the
 USB switch's own upstream hub, then select an LG webOS HDMI input
@@ -17,6 +17,8 @@ account, and no admin access for normal use.
   handle both directions on its own while the Windows PC is awake. A Mac helper
   is optional, useful when the Windows PC is asleep or switched off.
 - Reuses an authenticated TV connection instead of reconnecting on every switch.
+- Windows hub mode sleeps until native USB notifications arrive, with no idle
+  USB scans or stop-file polling. Keyboard mode retains portable polling.
 - Debounces reconnection, combines logical HID interfaces, cancels obsolete
   requests and limits retries. Initial startup and resume establish a silent
   baseline so launching the helper does not take the screen from another input.
@@ -36,8 +38,8 @@ peripherals can switch inputs, so it is unsuitable when that behavior is unwante
 Requires Python 3.12 or newer and [uv](https://docs.astral.sh/uv/).
 
 ```sh
-git clone https://github.com/loftspace/hdmi-follow.git
-cd hdmi-follow
+git clone https://github.com/loftspace/hdmi-switcher.git
+cd hdmi-switcher
 uv sync --frozen
 uv run hdmi-follow --version
 ```
@@ -145,13 +147,15 @@ revoked, use `pair` again. A TV may display a new pairing prompt before rejectin
 an obsolete key; the background helper will not wait for approval or keep retrying.
 
 No claim of instant or atomic switching: an input command already delivered to
-the TV cannot be recalled, and USB enumeration has a polling interval. A stable
-transition uses a 0.2-second stabilization period and 0.1-second polling by
-default, followed by TV/network response and HDMI display negotiation. A warm
+the TV cannot be recalled. Windows hub mode reacts to native USB notifications;
+keyboard mode scans at a 0.1-second interval. Stabilization defaults to 0.2 seconds
+and can be reduced to 0.05 seconds in the profile after hardware validation,
+followed by TV/network response and HDMI display negotiation. A warm
 connection avoids the first authentication handshake. After a disconnect or TV
 standby, the next command may need a fresh connection. Idle ping/pong checks run
 every five seconds; retries are bounded and canceled when ownership changes.
-HID enumeration failure or a long sleep/resume gap resets the baseline silently.
+Hub mode uses native suspend/resume notifications to reset its baseline silently.
+HID enumeration failure or a long sleep/resume gap does the same in keyboard mode.
 This avoids stale takeovers but can intentionally miss a switch during recovery.
 The helper must be running on an awake computer to observe USB changes.
 

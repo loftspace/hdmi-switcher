@@ -111,6 +111,16 @@ def _logging(path: Path) -> None:
     logging.getLogger("hdmi_follow").addHandler(handler)
 
 
+def _request_stop(path: Path) -> None:
+    stop_file = path.with_name("stop")
+    stop_file.parent.mkdir(parents=True, exist_ok=True)
+    stop_file.touch()
+    if sys.platform == "win32":
+        from hdmi_follow.windows_stop import signal_stop
+
+        signal_stop(stop_file)
+
+
 def execute(args: argparse.Namespace) -> None:
     path: Path = args.config.expanduser().resolve()
     if args.command == "usb-instances":
@@ -143,14 +153,12 @@ def execute(args: argparse.Namespace) -> None:
         print(f"Saved {path}. Pair the TV before starting the helper")
         return
     if args.command == "uninstall":
-        path.with_name("stop").parent.mkdir(parents=True, exist_ok=True)
-        path.with_name("stop").touch()
+        _request_stop(path)
         print(autostart.uninstall())
         print("Stop requested. Configuration and credentials retained")
         return
     if args.command == "stop":
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.with_name("stop").touch()
+        _request_stop(path)
         print("Stop requested")
         return
     if args.command == "status":

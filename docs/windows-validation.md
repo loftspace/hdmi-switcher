@@ -51,3 +51,33 @@ User confirmation matches the captured hub and helper events. Login startup is
 enabled. See [switch-hub investigation](switch-hub-investigation.md) for timing
 measurements and the whole-switch-unplug limitation. The updated suite has 107
 passing tests; Ruff and strict mypy pass.
+
+## 0.1.2 native notification optimization
+
+Installed and activated the unsigned 0.1.2 branch binaries on 2026-10-29.
+The Windows hub profile now uses native Configuration Manager USB notifications,
+native suspend/resume callbacks and a native stop event. There are no idle USB
+scans or stop-file checks. The authenticated TV session still sends a small
+health ping every five seconds. Portable keyboard mode retains polling.
+
+The local profile stabilization delay was reduced from 200 ms to 50 ms; the
+general default remains 200 ms. User physically switched to Mac and back and
+confirmed both directions work and feel quicker. TV command acknowledgements
+were 55 ms for HDMI 2 and 26 ms for HDMI 1, after stabilization. Button-to-picture
+latency was not measured and includes USB notification and HDMI negotiation.
+The keyboard-only unplug test passed on 0.1.1; it was not repeated on 0.1.2.
+The same exact upstream hub identity is still the signal.
+
+A fresh 10-second idle sample of 0.1.1 used 0.140625 CPU seconds across the worker
+and executable wrapper, about 1.4% of one core. A 15-second sample of installed
+0.1.2 recorded 0 CPU seconds at Windows process-timer resolution for both
+processes. This is below measurement resolution, not proof of literally zero
+CPU use. Combined private memory was about 25 MB. These are short local samples,
+not a long-term power benchmark.
+
+170 automated tests pass, including native callback filtering/lifetime, no idle
+rescans, first switch after long idle, duplicate events, reversal, suspend/resume
+fences, stop cancellation and live Windows stop signaling. Ruff lint/format and
+strict mypy pass. Native packaging and installed start/status/stop were verified.
+Independent review found no remaining actionable issues after callback lifetime
+and sampling-race fixes. Mac hardware validation remains deferred.
