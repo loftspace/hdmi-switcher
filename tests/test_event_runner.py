@@ -64,8 +64,13 @@ class Harness:
         self.failed_samples = 0
         self.fail_sample = False
         self.sent = []
-        self.tracker = OwnershipTracker(self.config.debounce, resume_gap=float("inf"))
-        monkeypatch.setattr(event_runner, "OwnershipTracker", lambda *args, **kwargs: self.tracker)
+        self.tracker = None
+
+        def observe_tracker(*args, **kwargs):
+            self.tracker = OwnershipTracker(*args, **kwargs)
+            return self.tracker
+
+        monkeypatch.setattr(event_runner, "OwnershipTracker", observe_tracker)
         monkeypatch.setattr(event_runner, "HubNotifications", lambda *args: self.hub)
         monkeypatch.setattr(event_runner, "StopNotification", lambda *args: self.stop)
         monkeypatch.setattr(event_runner, "sample_ownership", self.sample)
@@ -84,7 +89,7 @@ class Harness:
 
     async def start(self, session=None):
         self.task = asyncio.create_task(event_runner.run(self.config, "key", self.path, session))
-        await self.until(lambda: self.tracker.stable is True)
+        await self.until(lambda: self.tracker is not None and self.tracker.stable is True)
 
     async def until(self, condition):
         async with asyncio.timeout(3):
