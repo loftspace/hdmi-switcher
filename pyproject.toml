@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hdmi-follow"
-version = "0.1.4"
+version = "0.1.5"
 description = "Follow USB ownership with LG webOS HDMI input selection"
 requires-python = ">=3.12"
 dependencies = ["hidapi>=0.14,<0.16", "websockets>=15,<17"]

@@ -118,6 +118,12 @@ uv run hdmi-follow uninstall
 pairing data are retained. `start` is explicit and does not select an input until
 the first stable ownership transition.
 
+On Windows, `start` requests job breakaway and warns if the child still belongs
+to a Windows job. A launching host can control nested job lifetimes; successful
+creation alone does not guarantee independence. Prefer the Windows login task
+for persistent operation. Its failure policy retries three times at one-minute
+intervals; a normal CLI stop exits successfully and does not trigger those retries.
+
 ## Add the Mac later
 
 See [Mac handoff](docs/macos-handoff.md). Install the same helper with the Mac's
@@ -152,6 +158,17 @@ generation connect USB decisions to TV attempts, and each TV request has an ID.
 Logging explains observed decisions; an acknowledgement does not prove the TV
 showed the picture. A stalled process cannot write during its stall, so its next
 health/sample entry records the gap after it resumes.
+
+`run-state.json` persists the run PID, parent PID, last heartbeat and clean exit
+reason. On the next start a surviving running record is logged as an unclean
+exit with an unknown cause. Relevant Windows crash, resource-exhaustion and host
+service records are checked in the background and logged as supporting evidence,
+not proof that an unrelated event killed the helper. Stop requests record the
+requesting PID, timestamp and command type. `crash.log` captures fatal stack traces
+without local variable values and rotates at 1 MB with one backup.
+
+Forced termination and power loss cannot execute an in-process exit handler.
+When Windows has no explanatory event, the reason remains explicitly unknown.
 
 The TV must be reachable on the same trusted LAN. LG uses a self-signed TLS
 certificate; pairing does not establish verified server identity. The helper

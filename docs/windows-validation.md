@@ -139,3 +139,36 @@ task action was restored and remains enabled, and the working helper was started
 directly without a visible console. Automatic login startup of this build is
 not yet verified; investigate the scheduler/environment before recommending
 merge. No reboot was attempted and no TV privacy settings were changed.
+
+## 0.1.5 process lifetime evidence
+
+At 15:36 on 2026-11-01 no helper process was running. The last heartbeat was
+14:55:58 with no clean shutdown log. Windows recorded the Codex sandbox service
+being asked to stop at 14:56:11, then stopping and starting again. These were
+informational service records, not an application crash report. No helper crash
+or resource-exhaustion record was found in that interval. Their timing is useful
+evidence but does not prove what terminated the helper.
+
+The new run-state file survives termination and records clean stop/error reasons.
+Normal stop requests include requester PID and time. Fatal stack traces are armed
+in a bounded separate file. After an unclean prior record, sanitized Windows
+event evidence is queried asynchronously with bounded subprocess timeouts.
+Native Windows verification retrieved the service-stop records; it also caught
+and corrected the query's need for UTC Z timestamps.
+
+The background launcher requests breakaway from its launching Windows job and
+reports retained membership. A native probe showed that a successful breakaway
+can still leave an outer job, so no independence claim is made from that flag
+alone. The owned Windows task now retries reported failures three times with a
+one-minute delay. It was re-registered and successfully launched the installed
+0.1.5 helper, which wrote startup, job metadata, baseline and TV connection logs.
+The previous scheduler-start limitation was not reproduced in this verification.
+No host service was intentionally stopped and no reboot was performed.
+
+237 tests, Ruff lint/format, strict mypy, source/wheel and unsigned Windows
+packaging pass. The installed build was stopped through its CLI: the log included
+the requester PID/time and `cli_stop`, and the run-state file became clean.
+After installing the final build, Windows Task Scheduler launched it again;
+live state confirmed the task running, enabled, with restart count 3 and PT1M
+interval. The helper connected to the real TV. No forced-kill or service-stop
+test was performed on the user's active session.

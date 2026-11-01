@@ -1,4 +1,8 @@
+import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
+
+import pytest
 
 from hdmi_follow import cli
 from hdmi_follow.config import Config, Device, key_path, write_private_json
@@ -38,18 +42,21 @@ def test_setup_does_not_overwrite_configuration(tmp_path):
     assert path.read_text() == "keep"
 
 
-def test_frozen_background_child_resets_packager_environment(tmp_path, monkeypatch):
+def test_frozen_background_start_delegates_process_lifetime(tmp_path, monkeypatch):
     path = tmp_path / "config.json"
     Config("192.168.0.20", "HDMI_1", (Device(1, 2),)).save(path)
     write_private_json(key_path(path), {"tv_ip": "192.168.0.20", "client_key": "key"})
     calls = []
     monkeypatch.setattr(cli.sys, "frozen", True, raising=False)
-    monkeypatch.setattr(
-        cli.subprocess, "Popen", lambda *args, **kwargs: calls.append((args, kwargs))
-    )
+
+    def spawn(*args):
+        calls.append(args)
+        return SimpleNamespace(pid=123)
+
+    monkeypatch.setattr(cli.launch, "spawn_background", spawn)
     cli.execute(cli.parser().parse_args(["start", "--config", str(path)]))
-    assert calls[0][1]["env"]["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
-    assert "-m" not in calls[0][0][0]
+    assert "-m" not in calls[0][0]
+    assert calls[0][0][-2:] == ["--config", str(path)]
 
 
 def test_windows_stop_persists_marker_before_signaling(tmp_path, monkeypatch):
@@ -61,6 +68,9 @@ def test_windows_stop_persists_marker_before_signaling(tmp_path, monkeypatch):
     def signal(stop_file):
         assert stop_file == path.with_name("stop")
         assert stop_file.exists()
+        request = json.loads(stop_file.read_text(encoding="utf-8"))
+        assert request["requester_pid"] == cli.os.getpid()
+        assert request["reason"] == "cli_stop"
         calls.append(stop_file)
         return True
 
@@ -70,19 +80,27 @@ def test_windows_stop_persists_marker_before_signaling(tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
-def test_run_logs_startup_version_lifecycle_and_bounded_rotation(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure", [False, True])
+def test_run_logs_startup_version_lifecycle_and_bounded_rotation(tmp_path, monkeypatch, failure):
     import logging
 
     path = tmp_path / "config.json"
     Config("192.168.0.20", "HDMI_1", (Device(1, 2),)).save(path)
     write_private_json(key_path(path), {"tv_ip": "192.168.0.20", "client_key": "secret-key"})
-    monkeypatch.setattr(cli, "run", AsyncMock())
+    monkeypatch.setattr(
+        cli, "run", AsyncMock(side_effect=RuntimeError("secret-frame") if failure else None)
+    )
+    monkeypatch.setattr(cli.diagnostics, "enable_fatal_traces", lambda path: None)
     monkeypatch.setattr(cli.diagnostics, "health_summary", lambda: "memory=test")
     logger = logging.getLogger("hdmi_follow")
     before = list(logger.handlers)
     old_level = logger.level
     try:
-        cli.execute(cli.parser().parse_args(["run", "--config", str(path)]))
+        if failure:
+            with pytest.raises(RuntimeError):
+                cli.execute(cli.parser().parse_args(["run", "--config", str(path)]))
+        else:
+            cli.execute(cli.parser().parse_args(["run", "--config", str(path)]))
         handler = next(handler for handler in logger.handlers if handler not in before)
         assert handler.maxBytes == 2_000_000
         assert handler.backupCount == 4
@@ -92,6 +110,11 @@ def test_run_logs_startup_version_lifecycle_and_bounded_rotation(tmp_path, monke
         assert "memory=test" in content
         assert "Helper stopped" in content
         assert "secret-key" not in content
+        assert "secret-frame" not in content
+        record = json.loads(path.with_name("run-state.json").read_text(encoding="utf-8"))
+        assert record["status"] == "clean"
+        assert record["exit_reason"] == ("error" if failure else "normal")
+        assert cli.lifecycle._current is None
     finally:
         for handler in list(logger.handlers):
             if handler not in before:

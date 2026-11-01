@@ -5,13 +5,13 @@ import asyncio
 import json
 import logging
 import os
-import subprocess
 import sys
 import time
+from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from hdmi_follow import __version__, autostart, diagnostics, tv
+from hdmi_follow import __version__, autostart, diagnostics, exit_evidence, launch, lifecycle, tv
 from hdmi_follow.config import (
     Config,
     Device,
@@ -113,10 +113,19 @@ def _logging(path: Path) -> None:
     logging.getLogger("hdmi_follow").addHandler(handler)
 
 
-def _request_stop(path: Path) -> None:
+def _request_stop(path: Path, reason: str = "cli_stop") -> None:
     stop_file = path.with_name("stop")
     stop_file.parent.mkdir(parents=True, exist_ok=True)
-    stop_file.touch()
+    stop_file.write_text(
+        json.dumps(
+            {
+                "reason": reason,
+                "requester_pid": os.getpid(),
+                "requested_at": datetime.now(UTC).isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
     if sys.platform == "win32":
         from hdmi_follow.windows_stop import signal_stop
 
@@ -155,7 +164,7 @@ def execute(args: argparse.Namespace) -> None:
         print(f"Saved {path}. Pair the TV before starting the helper")
         return
     if args.command == "uninstall":
-        _request_stop(path)
+        _request_stop(path, "uninstall")
         print(autostart.uninstall())
         print("Stop requested. Configuration and credentials retained")
         return
@@ -232,23 +241,26 @@ def execute(args: argparse.Namespace) -> None:
             command += ["-m", "hdmi_follow"]
         command += ["run", "--config", str(path)]
         with (path.parent / "startup.log").open("ab") as output:
-            environment = os.environ.copy()
-            environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
-            subprocess.Popen(
-                command,
-                stdin=subprocess.DEVNULL,
-                stdout=output,
-                stderr=output,
-                creationflags=0x08000000 if os.name == "nt" else 0,
-                start_new_session=os.name != "nt",
-                env=environment,
+            output.write(
+                (
+                    f"{datetime.now(UTC).isoformat()} background launch requested "
+                    f"launcher_pid={os.getpid()}\n"
+                ).encode()
             )
+            output.flush()
+            child = launch.spawn_background(command, output, os.environ.copy())
+            output.write((f"{datetime.now(UTC).isoformat()} launched_pid={child.pid}\n").encode())
+            output.flush()
         print("Background start requested; use status to verify")
     elif args.command == "run":
         with instance_lock(path.with_name("run.lock")):
             path.with_name("stop").unlink(missing_ok=True)
             _logging(path.parent / "follow.log")
             log = logging.getLogger(__name__)
+            record = lifecycle.RunRecord(path.with_name("run-state.json"), __version__)
+            record.start()
+            lifecycle.set_current(record)
+            crash_log = diagnostics.enable_fatal_traces(path.with_name("crash.log"))
             log.info(
                 "Helper starting version=%s platform=%s mode=%s debounce_ms=%.0f own=%s away=%s %s",
                 __version__,
@@ -259,20 +271,44 @@ def execute(args: argparse.Namespace) -> None:
                 config.away_input,
                 diagnostics.health_summary(),
             )
-            try:
-                asyncio.run(
-                    run(
+
+            async def monitored_run() -> None:
+                evidence = None
+                if record.previous is not None and record.previous.get("status") == "running":
+                    evidence = asyncio.create_task(
+                        exit_evidence.report_unclean_exit(record.previous)
+                    )
+                try:
+                    await run(
                         config,
                         key,
                         stop_file=path.with_name("stop"),
                         session=Session(config.tv_ip, key),
                     )
-                )
+                finally:
+                    if evidence is not None:
+                        evidence.cancel()
+                        await asyncio.gather(evidence, return_exceptions=True)
+
+            exit_reason = "normal"
+            try:
+                asyncio.run(monitored_run())
+                if path.with_name("stop").exists():
+                    exit_reason = "cli_stop"
+                    log.info("Exit requested %s", diagnostics.stop_summary(path.with_name("stop")))
+            except KeyboardInterrupt:
+                exit_reason = "interrupt"
+                log.info("Helper interrupted by console signal")
+                raise
             except BaseException as exc:
+                exit_reason = "error"
                 log.error("Helper exiting error_type=%s", type(exc).__name__)
                 raise
             finally:
-                log.info("Helper stopped")
+                record.finish(exit_reason)
+                lifecycle.set_current(None)
+                diagnostics.close_fatal_traces(crash_log)
+                log.info("Helper stopped reason=%s", exit_reason)
 
 
 def main() -> None:

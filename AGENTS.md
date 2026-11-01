@@ -19,6 +19,9 @@ webOS LAN input selection. Never read HID input reports or capture keystrokes.
 - Secrets and machine-specific configurations stay outside Git.
 - Diagnostic logs must never include pairing keys, raw TV frames or exception
   bodies. Log safe error classes and decision reasons; keep periodic logs bounded.
+- `lifecycle.py`: persistent clean/unclean run record; mark unknown causes honestly.
+- `exit_evidence.py`: bounded Windows evidence, whitelist fields, correlation only.
+- `launch.py`: request Windows job breakaway, never mask denial with an attached retry.
 - Do not change TV privacy settings, wake the TV, or infer HDMI mapping silently.
 - A command already delivered to the TV cannot be recalled. Never promise otherwise.
 - Mac hardware tests require a real Mac. Mark unverified behavior honestly.

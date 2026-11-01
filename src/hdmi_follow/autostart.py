@@ -87,6 +87,9 @@ def _windows_xml(command: list[str]) -> bytes:
         "ExecutionTimeLimit": "PT0S",
     }.items():
         child(settings, tag, value)
+    restart = child(settings, "RestartOnFailure")
+    child(restart, "Interval", "PT1M")
+    child(restart, "Count", "3")
     actions = child(root, "Actions")
     actions.set("Context", "CurrentUser")
     action = child(actions, "Exec")

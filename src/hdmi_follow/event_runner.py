@@ -314,7 +314,12 @@ async def run(
                 continue
             if stop_task is not None and stop_task in done:
                 stop_task.result()
-                LOG.info("Stop requested")
+                LOG.info(
+                    "Stop requested %s",
+                    diagnostics.stop_summary(stop_file)
+                    if stop_file
+                    else "requester_pid=unknown reason=unknown",
+                )
                 return
             if device_task in done:
                 signal = device_task.result()
