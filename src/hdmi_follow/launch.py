@@ -6,6 +6,7 @@ import ctypes
 import logging
 import os
 import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from ctypes import wintypes
 from typing import BinaryIO
@@ -21,6 +22,8 @@ class BackgroundLaunchError(RuntimeError):
 
 def _in_job(handle: int | None = None) -> bool:
     """Check any job membership, including outer jobs in a nested hierarchy."""
+    if sys.platform != "win32":
+        raise OSError("Windows job membership is unavailable on this platform")
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.GetCurrentProcess.restype = wintypes.HANDLE
     kernel.IsProcessInJob.argtypes = [

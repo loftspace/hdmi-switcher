@@ -172,3 +172,5 @@ After installing the final build, Windows Task Scheduler launched it again;
 live state confirmed the task running, enabled, with restart count 3 and PT1M
 interval. The helper connected to the real TV. No forced-kill or service-stop
 test was performed on the user's active session.
+Native process ancestry also confirmed the running background bootloader was
+launched by a Windows service host, rather than the manual Codex process.
