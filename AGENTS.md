@@ -13,7 +13,8 @@ webOS LAN input selection. Never read HID input reports or capture keystrokes.
 - `runner.py`: portable polling, cancel obsolete work, bound retries.
 - `event_runner.py`: Windows hub reactor, native USB/power/stop notifications.
 - `windows_notifications.py`, `windows_stop.py`: native callbacks must remain
-  rooted until successful synchronous unregister. No idle polling in hub mode.
+  rooted until successful synchronous unregister. Keep normal hub switching
+  notification-driven; low-frequency reconciliation recovers lost notifications.
 - `config.py`, `instance.py`, `autostart.py`, `cli.py`: local lifecycle.
 - Secrets and machine-specific configurations stay outside Git.
 - Do not change TV privacy settings, wake the TV, or infer HDMI mapping silently.

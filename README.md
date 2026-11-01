@@ -17,8 +17,9 @@ account, and no admin access for normal use.
   handle both directions on its own while the Windows PC is awake. A Mac helper
   is optional, useful when the Windows PC is asleep or switched off.
 - Reuses an authenticated TV connection instead of reconnecting on every switch.
-- Windows hub mode sleeps until native USB notifications arrive, with no idle
-  USB scans or stop-file polling. Keyboard mode retains portable polling.
+- Windows hub mode reacts to native USB notifications, briefly rechecks inventory
+  while a device settles, and reconciles once per second to recover missed
+  notifications. Stop signaling is native. Keyboard mode retains portable polling.
 - Debounces reconnection, combines logical HID interfaces, cancels obsolete
   requests and limits retries. Initial startup and resume establish a silent
   baseline so launching the helper does not take the screen from another input.
@@ -148,7 +149,10 @@ an obsolete key; the background helper will not wait for approval or keep retryi
 
 No claim of instant or atomic switching: an input command already delivered to
 the TV cannot be recalled. Windows hub mode reacts to native USB notifications;
-keyboard mode scans at a 0.1-second interval. Stabilization defaults to 0.2 seconds
+missed notifications recover through a one-second inventory check plus debounce.
+This fallback does not delay the normal notification path. Short post-event
+checks cover arrival notifications delivered before present-device inventory updates.
+Keyboard mode scans at a 0.1-second interval. Stabilization defaults to 0.2 seconds
 and can be reduced to 0.05 seconds in the profile after hardware validation,
 followed by TV/network response and HDMI display negotiation. A warm
 connection avoids the first authentication handshake. After a disconnect or TV

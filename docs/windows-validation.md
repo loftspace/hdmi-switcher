@@ -81,3 +81,28 @@ fences, stop cancellation and live Windows stop signaling. Ruff lint/format and
 strict mypy pass. Native packaging and installed start/status/stop were verified.
 Independent review found no remaining actionable issues after callback lifetime
 and sampling-race fixes. Mac hardware validation remains deferred.
+
+## 0.1.3 missed hub transition recovery
+
+On 2026-11-01 the user reported one missed return after many successful switches.
+The installed helper was running and the configured hub was present, but the
+log ended with departure and HDMI 2 acknowledgement, with no matching acquisition
+or protocol error. This localizes the miss to ownership detection; the exact
+notification/inventory timing was not recorded and cannot be proven afterward.
+
+The 0.1.2 event path had no follow-up read when its first inventory snapshot still
+matched the old stable state. A notification delivered before inventory updates,
+or an entirely missed callback, could therefore leave ownership stale indefinitely.
+Regression tests reproduce both cases. Version 0.1.3 rechecks for half a second
+after hub events and reconciles once per second as a fallback. Normal native
+events still use the configured 50 ms stabilization. Fallback detection adds at
+most roughly one second plus stabilization under normal scheduling, rather than
+waiting forever. It does not repeatedly force the TV input while ownership stays
+unchanged. A long sampling gap resets the baseline silently for suspend safety.
+
+177 tests pass, including recovery in both directions, bounded idle checks,
+silent resume and recovery after a missed power notification. Ruff, strict mypy,
+source/wheel and unsigned Windows packaging pass. Version 0.1.3 was installed
+and started through the existing enabled login task. Physical validation is
+recorded separately below when completed. Small periodic USB checks are now an
+intentional reliability tradeoff; the 0.1.2 no-idle-scan claim is historical.

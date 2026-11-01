@@ -1,4 +1,4 @@
-"""Event-driven Windows hub ownership; idle operation never rescans USB."""
+"""Fast native hub notifications with low-frequency inventory reconciliation."""
 
 import asyncio
 import logging
@@ -14,6 +14,9 @@ from hdmi_follow.windows_notifications import HubNotifications, Signal
 from hdmi_follow.windows_stop import StopNotification
 
 LOG = logging.getLogger(__name__)
+RECONCILE_INTERVAL = 1.0
+EVENT_SETTLE_WINDOW = 0.5
+EVENT_RECHECK_INTERVAL = 0.05
 
 
 def event_current(
@@ -70,7 +73,10 @@ async def run(
     pending: asyncio.Task[None] | None = None
     warm: asyncio.Task[None] | None = None
     handled_power = 0
-    tracker = OwnershipTracker(config.debounce, resume_gap=float("inf"))
+    recheck_until = 0.0
+    # Reconciliation supplies regular samples, so a long gap now indicates
+    # suspend or scheduler starvation even if the power notification was missed.
+    tracker = OwnershipTracker(config.debounce)
 
     async def cancel(task: asyncio.Task[Any] | None) -> None:
         if task is not None:
@@ -85,7 +91,7 @@ async def run(
         await cancel(timer)
         timer = None
 
-    async def sample() -> None:
+    async def sample(recovery: bool = False) -> None:
         nonlocal timer, pending, handled_power
         assert source is not None
         epoch = source.power_revision
@@ -103,6 +109,14 @@ async def run(
         if source.suspended or source.power_revision != epoch:
             await reset()
             return
+        if (
+            recovery
+            and present is not None
+            and tracker.stable is not None
+            and present != tracker.stable
+            and present != tracker.candidate
+        ):
+            LOG.warning("Recovery check found a missed or delayed hub transition")
         now = time.time()
         before = tracker.generation
         transition = tracker.update(present, now)
@@ -119,15 +133,21 @@ async def run(
             pending = asyncio.create_task(
                 follow_transition(config, key, transition, current, session)
             )
-        # Only unsettled state needs one timer. Duplicate events preserve the
-        # original candidate timestamp rather than extending the debounce period.
+        # Native arrival can precede the present-device inventory update. Keep
+        # checking briefly even when the first read still matches the old state.
         await cancel(timer)
         timer = None
+        delay: float | None = None
         if tracker.candidate is not None and (
             tracker.stable is None or tracker.candidate != tracker.stable
         ):
-            remaining = max(0.0, tracker.since + tracker.debounce - time.time())
-            timer = asyncio.create_task(asyncio.sleep(remaining))
+            delay = max(0.0, tracker.since + tracker.debounce - time.time())
+        if time.monotonic() < recheck_until:
+            delay = (
+                min(delay, EVENT_RECHECK_INTERVAL) if delay is not None else EVENT_RECHECK_INTERVAL
+            )
+        if delay is not None:
+            timer = asyncio.create_task(asyncio.sleep(delay))
 
     try:
         loop = asyncio.get_running_loop()
@@ -140,14 +160,19 @@ async def run(
         handled_power = source.power_revision
         device_task = asyncio.create_task(source.wait())
         await sample()  # Register first, then establish a silent ownership baseline.
-        LOG.info("Watching native hub events; no idle USB polling")
+        LOG.info("Watching native hub events; %.1fs recovery checks", RECONCILE_INTERVAL)
         while True:
             waiters: set[asyncio.Task[Any]] = {device_task}
             if stop_task is not None:
                 waiters.add(stop_task)
             if timer is not None:
                 waiters.add(timer)
-            done, _ = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait(
+                waiters, timeout=RECONCILE_INTERVAL, return_when=asyncio.FIRST_COMPLETED
+            )
+            if not done:
+                await sample(recovery=True)
+                continue
             if stop_task is not None and stop_task in done:
                 stop_task.result()
                 LOG.info("Stop requested")
@@ -155,6 +180,9 @@ async def run(
             if device_task in done:
                 signal = device_task.result()
                 device_task = asyncio.create_task(source.wait())
+                if signal.reason == "device":
+                    LOG.info("Hub notification received (revision %s)", signal.revision)
+                    recheck_until = time.monotonic() + EVENT_SETTLE_WINDOW
                 if signal.reason == "reset" or source.power_revision != handled_power:
                     handled_power = source.power_revision
                     await reset()

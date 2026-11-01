@@ -89,7 +89,7 @@ class Harness:
 
     async def start(self, session=None):
         self.task = asyncio.create_task(event_runner.run(self.config, "key", self.path, session))
-        await self.until(lambda: self.tracker is not None and self.tracker.stable is True)
+        await self.until(lambda: self.tracker is not None and self.tracker.stable is self.present)
 
     async def until(self, condition):
         async with asyncio.timeout(3):
@@ -117,11 +117,27 @@ async def test_idle_establishes_baseline_then_never_rescans(monkeypatch, tmp_pat
 
 
 async def test_first_edge_after_long_idle_still_switches(monkeypatch, tmp_path):
+    monkeypatch.setattr(event_runner, "RECONCILE_INTERVAL", 0.01)
     harness = Harness(monkeypatch, tmp_path)
     offset = 0
-    monkeypatch.setattr(event_runner, "time", SimpleNamespace(time=lambda: time.time() + offset))
+
+    def heartbeat_sample(config):
+        nonlocal offset
+        # Advance idle wall time through observed heartbeats, not one suspend-like gap.
+        if harness.present:
+            offset += 1
+        return harness.sample(config)
+
+    monkeypatch.setattr(event_runner, "sample_ownership", heartbeat_sample)
+    monkeypatch.setattr(
+        event_runner,
+        "time",
+        SimpleNamespace(time=lambda: time.time() + offset, monotonic=time.monotonic),
+    )
     await harness.start()
-    offset = 3600
+    await harness.until(lambda: harness.samples >= 20)
+    assert offset >= 20
+    assert harness.sent == []
     harness.present = False
     harness.hub.device()
     await harness.until(lambda: harness.sent == [False])
@@ -129,11 +145,34 @@ async def test_first_edge_after_long_idle_still_switches(monkeypatch, tmp_path):
     await harness.finish()
 
 
+async def test_long_sampling_gap_silently_rebaselines_then_next_edge_works(monkeypatch, tmp_path):
+    monkeypatch.setattr(event_runner, "RECONCILE_INTERVAL", 0.1)
+    harness = Harness(monkeypatch, tmp_path)
+    offset = 0
+    monkeypatch.setattr(
+        event_runner,
+        "time",
+        SimpleNamespace(time=lambda: time.time() + offset, monotonic=time.monotonic),
+    )
+    await harness.start()
+    offset = 3600  # Suspend or loop starvation with no delivered power callback.
+    harness.present = False
+    await harness.until(lambda: harness.tracker.stable is False)
+    assert harness.sent == []
+    assert harness.hub.power_revision == 0
+    harness.present = True
+    harness.hub.device()
+    await harness.until(lambda: harness.sent == [True])
+    await harness.finish()
+
+
 async def test_fast_reversal_inside_debounce_does_not_switch(monkeypatch, tmp_path):
     harness = Harness(monkeypatch, tmp_path)
     await harness.start()
     frozen_time = time.time()
-    monkeypatch.setattr(event_runner, "time", SimpleNamespace(time=lambda: frozen_time))
+    monkeypatch.setattr(
+        event_runner, "time", SimpleNamespace(time=lambda: frozen_time, monotonic=time.monotonic)
+    )
     harness.present = False
     before = harness.samples
     harness.hub.device()
@@ -263,6 +302,77 @@ async def test_failed_inventory_rebaselines_without_inferring_disconnect(monkeyp
     harness.hub.device()
     await harness.until(lambda: harness.tracker.stable is False)
     assert harness.sent == []
+    await harness.finish()
+
+
+@pytest.mark.parametrize("target_present", [True, False])
+async def test_early_callback_old_inventory_recovers_without_second_callback(
+    monkeypatch, tmp_path, target_present
+):
+    # Disable slow reconciliation: success must come from the short settle burst.
+    monkeypatch.setattr(event_runner, "RECONCILE_INTERVAL", 60)
+    harness = Harness(monkeypatch, tmp_path)
+    harness.present = not target_present
+    await harness.start()
+    before = harness.samples
+    harness.hub.device()
+    await harness.until(lambda: harness.samples > before)
+    assert harness.tracker.stable is not target_present
+    assert harness.sent == []
+    harness.present = target_present  # Inventory catches up, but Windows sends no new callback.
+    await harness.until(lambda: harness.sent == [target_present])
+    assert harness.hub.revision == 1
+    await harness.finish()
+
+
+@pytest.mark.parametrize("target_present", [True, False])
+async def test_lost_callback_recovers_on_reconciliation_and_debounce(
+    monkeypatch, tmp_path, target_present
+):
+    interval = 0.1
+    monkeypatch.setattr(event_runner, "RECONCILE_INTERVAL", interval)
+    harness = Harness(monkeypatch, tmp_path)
+    harness.present = not target_present
+    await harness.start()
+    harness.present = target_present
+    # Extra wall time is CI scheduling tolerance, not an additional retry interval.
+    async with asyncio.timeout(interval + harness.config.debounce + 1):
+        await harness.until(lambda: harness.sent == [target_present])
+    assert harness.hub.revision == 0
+    await harness.finish()
+
+
+async def test_steady_idle_reconciles_at_low_frequency_without_sending(monkeypatch, tmp_path):
+    harness = Harness(monkeypatch, tmp_path)
+    await harness.start()
+    before = harness.samples
+    started = time.monotonic()
+    # This is an observation period for the default one-second recovery cadence.
+    await asyncio.sleep(event_runner.RECONCILE_INTERVAL + 0.1)
+    elapsed = time.monotonic() - started
+    count = harness.samples - before
+    assert 1 <= count <= int(elapsed / event_runner.RECONCILE_INTERVAL) + 1
+    assert harness.sent == []
+    await harness.finish()
+
+
+async def test_reconciliation_respects_suspend_and_silent_resume_baseline(monkeypatch, tmp_path):
+    monkeypatch.setattr(event_runner, "RECONCILE_INTERVAL", 0.1)
+    harness = Harness(monkeypatch, tmp_path)
+    await harness.start()
+    harness.hub.power(True, deliver=False)
+    harness.present = False  # Hub powers down without a delivered device callback.
+    await harness.until(lambda: harness.tracker.stable is None)
+    samples = harness.samples
+    await asyncio.sleep(0.15)
+    assert harness.samples == samples
+    assert harness.sent == []
+    harness.hub.power(False, deliver=False)
+    await harness.until(lambda: harness.tracker.stable is False)
+    assert harness.sent == []
+    harness.present = True
+    await harness.until(lambda: harness.sent == [True])
+    assert harness.hub.queue.empty()
     await harness.finish()
 
 
