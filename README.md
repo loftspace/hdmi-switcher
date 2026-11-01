@@ -136,9 +136,22 @@ Configuration defaults to `~/Documents/HDMI Follow/config.json` on Windows and
 directory per profile with `--config PATH`. Pairing data is stored beside it in
 `credentials.json`. Do not upload that file or your profile directory.
 
-`follow.log` rotates at 1 MB with two backups. It records ownership and command
-outcomes, never input reports or credentials. `status` reports process locking
+`follow.log` rotates at 2 MB with four backups (about 10 MB total). It records
+startup version/PID, native USB actions, inventory and ownership changes, baseline
+resets, skipped-command reasons, command attempts and TV request acknowledgements.
+A health entry every 30 seconds records ownership state, scheduling gaps and
+available RAM/commit memory on Windows. Routine successful health pings and
+unchanged one-second inventory checks do not each produce a log entry.
+It never records input reports, pairing keys, raw TV frames or server error bodies.
+`status` reports process locking
 and login registration, not proof that the TV or USB signal is working.
+
+If switching fails, note the approximate time and direction before restarting.
+Keep `follow.log` and its numbered backups: the startup PID and ownership
+generation connect USB decisions to TV attempts, and each TV request has an ID.
+Logging explains observed decisions; an acknowledgement does not prove the TV
+showed the picture. A stalled process cannot write during its stall, so its next
+health/sample entry records the gap after it resumes.
 
 The TV must be reachable on the same trusted LAN. LG uses a self-signed TLS
 certificate; pairing does not establish verified server identity. The helper

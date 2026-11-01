@@ -106,3 +106,26 @@ source/wheel and unsigned Windows packaging pass. Version 0.1.3 was installed
 and started through the existing enabled login task. Physical validation is
 recorded separately below when completed. Small periodic USB checks are now an
 intentional reliability tradeoff; the 0.1.2 no-idle-scan claim is historical.
+
+## 0.1.4 diagnostic logging
+
+A further missed return was reported on 2026-11-01. The old log recorded departure
+at 08:41:23 and native callbacks at 08:44:39, but no acquisition or command.
+Those records cannot distinguish stale inventory from a silent baseline reset.
+Earlier high memory pressure is a possible contributor, not a proven cause of
+this particular failure. The pre-instrumentation log was preserved locally.
+
+This version changes observability, not switch timing or ownership policy.
+It logs native action codes, inventory changes and duration, sampling gaps,
+before/after ownership state, silent baseline decisions, reset and guard reasons,
+pending cancellation, generation-tagged command attempts, TV request IDs and
+acknowledgements, connection outages and recovery. Every 30 seconds a heartbeat
+records state and native Windows available RAM/commit counters without WMI or
+subprocesses. Startup includes version and PID; shutdown and fatal error classes
+are recorded. The 2 MB log has four backups, bounding storage near 10 MB.
+
+203 tests pass, including log correlation, all guard rejection categories,
+baseline/gap/reset evidence, bounded heartbeat/outage logging, native memory
+counters, and secret-bearing exception/frame tests. Ruff, formatting and strict
+mypy pass. A TV acknowledgement still does not prove visible HDMI picture.
+Mac hardware validation remains deferred.

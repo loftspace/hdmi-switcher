@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import logging
+import time
 from collections.abc import Callable
 
 from websockets.asyncio.client import ClientConnection
@@ -15,6 +17,7 @@ from hdmi_follow import tv
 RECONNECT_INTERVAL = 5.0
 COMMAND_TIMEOUT = 4.0
 HEALTH_TIMEOUT = 1.0
+LOG = logging.getLogger(__name__)
 
 
 class Session:
@@ -28,12 +31,30 @@ class Session:
         self._ids = itertools.count(1)
         self._disabled = False
         self._closed = False
+        self._online = False
+        self._failure_type: str | None = None
+
+    def _report_failure(self, error_type: str) -> None:
+        if self._failure_type != error_type:
+            LOG.warning("TV connection unavailable error=%s", error_type)
+        self._failure_type = error_type
+
+    def _report_ready(self) -> None:
+        if self._failure_type is not None:
+            LOG.info("TV connection recovered error=%s", self._failure_type)
+        elif not self._online:
+            LOG.info("TV connection connected")
+        self._failure_type = None
+        self._online = True
 
     def _invalidate(self) -> None:
         # Abort rather than waiting for a close handshake after a command timeout.
         # A subsequent command gets another socket and another unique request ID.
         ws, self._ws = self._ws, None
         if ws is not None:
+            if self._online:
+                LOG.info("TV connection disconnected")
+            self._online = False
             ws.transport.abort()
 
     async def _ensure_connected(self) -> ClientConnection:
@@ -44,6 +65,8 @@ class Session:
         if self._ws is not None and self._ws.state is State.OPEN:
             return self._ws
         self._invalidate()
+        if self._failure_type is None:
+            LOG.info("TV connection attempt")
         try:
             self._ws = await tv._connect(self._ip)
             if self._closed:
@@ -51,9 +74,18 @@ class Session:
             self._key = await tv._register(self._ws, self._key, False)
             if self._closed:
                 raise tv.TVError("TV session is closed")
+            # During an outage, registration alone is not proof of recovery:
+            # wait for the maintenance pong or a successful command reply.
+            if self._failure_type is None:
+                self._report_ready()
             return self._ws
         except tv.PairingRequired:
             self._disabled = True
+            LOG.info("TV pairing rejected; automatic reconnect disabled")
+            self._invalidate()
+            raise
+        except Exception as exc:
+            self._report_failure(type(exc).__name__)
             self._invalidate()
             raise
         except BaseException:
@@ -73,6 +105,7 @@ class Session:
                 async with asyncio.timeout(HEALTH_TIMEOUT):
                     pong = await ws.ping()
                     await pong
+                self._report_ready()
             except BaseException:
                 self._invalidate()
                 raise
@@ -84,12 +117,10 @@ class Session:
                 await self._warm_once()
             except tv.PairingRequired:
                 return
-            except (OSError, TimeoutError, tv.TVError):
-                pass
-            except Exception:
+            except Exception as exc:
                 # A protocol failure is retried on the next bounded warm attempt.
                 # Do not log server-controlled bodies or credential-bearing frames.
-                pass
+                self._report_failure(type(exc).__name__)
             if not self._closed and not self._disabled:
                 await asyncio.sleep(RECONNECT_INTERVAL)
 
@@ -97,14 +128,18 @@ class Session:
         """Send once on the current socket, only while the USB transition is current."""
         if target not in {f"HDMI_{number}" for number in range(1, 5)}:
             raise ValueError("Invalid HDMI input")
-        async with asyncio.timeout(COMMAND_TIMEOUT), self._lock:
-            try:
+        request_id = f"switch-{next(self._ids)}"
+        started = time.perf_counter()
+        acquired = False
+        try:
+            async with asyncio.timeout(COMMAND_TIMEOUT), self._lock:
+                acquired = True
                 if not current():
                     raise tv.StaleRequest("USB ownership changed before the command was sent")
                 ws = await self._ensure_connected()
-                request_id = f"switch-{next(self._ids)}"
                 if not current():
                     raise tv.StaleRequest("USB ownership changed before the command was sent")
+                LOG.info("TV switch send id=%s target=%s", request_id, target)
                 await ws.send(
                     json.dumps(
                         {
@@ -119,14 +154,43 @@ class Session:
                 body = reply.get("payload")
                 if not isinstance(body, dict) or body.get("returnValue") is not True:
                     raise tv.TVError("TV did not accept the command")
-            except tv.StaleRequest:
-                # No command was sent. The healthy warm connection is still useful.
-                raise
-            except BaseException:
+                self._report_ready()
+                LOG.info(
+                    "TV switch reply id=%s target=%s duration_ms=%.1f",
+                    request_id,
+                    target,
+                    (time.perf_counter() - started) * 1000,
+                )
+        except tv.StaleRequest:
+            # No command was sent. The healthy warm connection is still useful.
+            LOG.info(
+                "TV switch stale id=%s target=%s duration_ms=%.1f",
+                request_id,
+                target,
+                (time.perf_counter() - started) * 1000,
+            )
+            raise
+        except BaseException as exc:
+            if acquired:
                 self._invalidate()
-                raise
+            outcome = "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed"
+            if isinstance(exc, TimeoutError):
+                outcome = "timeout"
+            if acquired and isinstance(exc, Exception):
+                self._report_failure(type(exc).__name__)
+            LOG.info(
+                "TV switch %s id=%s target=%s error=%s duration_ms=%.1f",
+                outcome,
+                request_id,
+                target,
+                type(exc).__name__,
+                (time.perf_counter() - started) * 1000,
+            )
+            raise
 
     async def close(self) -> None:
         """Stop reuse immediately, including when another operation holds the lock."""
+        if not self._closed:
+            LOG.info("TV session closed")
         self._closed = True
         self._invalidate()

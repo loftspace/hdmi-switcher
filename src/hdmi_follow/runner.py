@@ -47,31 +47,78 @@ async def follow_transition(
 ) -> None:
     target = config.own_input if transition.present else config.away_input
     if not target:
+        LOG.info("Command skipped generation=%s reason=no_target", transition.generation)
         return
     for attempt in range(2):
         if not current():
+            LOG.info(
+                "Command skipped generation=%s target=%s reason=ownership_guard attempt=%s",
+                transition.generation,
+                target,
+                attempt + 1,
+            )
             return
         try:
+            LOG.info(
+                "Command starting generation=%s target=%s attempt=%s",
+                transition.generation,
+                target,
+                attempt + 1,
+            )
             started = time.perf_counter()
             if session is not None:
                 await session.switch(target, current)
             else:
                 await tv.switch(config.tv_ip, key, target, current)
             LOG.info(
-                "Selected %s (TV command %.0f ms)", target, (time.perf_counter() - started) * 1000
+                "Selected %s (TV command %.0f ms) generation=%s attempt=%s",
+                target,
+                (time.perf_counter() - started) * 1000,
+                transition.generation,
+                attempt + 1,
             )
             return
-        except (tv.PairingRequired, tv.StaleRequest):
-            LOG.warning("Switch not performed: pairing or ownership changed")
+        except tv.PairingRequired:
+            LOG.warning(
+                "Command dropped generation=%s target=%s reason=pairing_required",
+                transition.generation,
+                target,
+            )
             return
+        except tv.StaleRequest:
+            LOG.info(
+                "Command dropped generation=%s target=%s reason=stale_request",
+                transition.generation,
+                target,
+            )
+            return
+        except asyncio.CancelledError:
+            LOG.info("Command cancelled generation=%s target=%s", transition.generation, target)
+            raise
         except (OSError, TimeoutError, tv.TVError, ConnectionClosed) as exc:
-            LOG.warning("TV unavailable (%s), attempt %s/2", type(exc).__name__, attempt + 1)
+            LOG.warning(
+                "TV unavailable error_type=%s generation=%s target=%s attempt=%s/2",
+                type(exc).__name__,
+                transition.generation,
+                target,
+                attempt + 1,
+            )
         except Exception as exc:
             # A malformed response or protocol error must not terminate the USB watcher.
-            LOG.warning("TV protocol failure (%s); dropping this event", type(exc).__name__)
+            LOG.warning(
+                "Command dropped error_type=%s generation=%s target=%s reason=protocol",
+                type(exc).__name__,
+                transition.generation,
+                target,
+            )
             return
         if attempt == 0:
             await asyncio.sleep(0.5)
+    LOG.warning(
+        "Command dropped generation=%s target=%s reason=retries_exhausted",
+        transition.generation,
+        target,
+    )
 
 
 async def run(

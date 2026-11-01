@@ -11,7 +11,7 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from hdmi_follow import __version__, autostart, tv
+from hdmi_follow import __version__, autostart, diagnostics, tv
 from hdmi_follow.config import (
     Config,
     Device,
@@ -105,8 +105,10 @@ def diagnostic(seconds: int, switch_hub: str | None = None) -> None:
 
 
 def _logging(path: Path) -> None:
-    handler = RotatingFileHandler(path, maxBytes=1_000_000, backupCount=2, encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    handler = RotatingFileHandler(path, maxBytes=2_000_000, backupCount=4, encoding="utf-8")
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s pid=%(process)d %(name)s %(message)s")
+    )
     logging.getLogger("hdmi_follow").setLevel(logging.INFO)
     logging.getLogger("hdmi_follow").addHandler(handler)
 
@@ -246,14 +248,31 @@ def execute(args: argparse.Namespace) -> None:
         with instance_lock(path.with_name("run.lock")):
             path.with_name("stop").unlink(missing_ok=True)
             _logging(path.parent / "follow.log")
-            asyncio.run(
-                run(
-                    config,
-                    key,
-                    stop_file=path.with_name("stop"),
-                    session=Session(config.tv_ip, key),
-                )
+            log = logging.getLogger(__name__)
+            log.info(
+                "Helper starting version=%s platform=%s mode=%s debounce_ms=%.0f own=%s away=%s %s",
+                __version__,
+                sys.platform,
+                "hub" if config.switch_hub else "keyboard",
+                config.debounce * 1000,
+                config.own_input,
+                config.away_input,
+                diagnostics.health_summary(),
             )
+            try:
+                asyncio.run(
+                    run(
+                        config,
+                        key,
+                        stop_file=path.with_name("stop"),
+                        session=Session(config.tv_ip, key),
+                    )
+                )
+            except BaseException as exc:
+                log.error("Helper exiting error_type=%s", type(exc).__name__)
+                raise
+            finally:
+                log.info("Helper stopped")
 
 
 def main() -> None:

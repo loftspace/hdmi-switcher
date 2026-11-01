@@ -110,7 +110,7 @@ async def test_device_callback_fences_immediately_then_enqueues_on_loop(monkeypa
         assert not source.suspended
         assert source._queue.empty()
         loop.flush()
-        assert await source.wait() == native.Signal("device", 1)
+        assert await source.wait() == native.Signal("device", 1, action)
     finally:
         source.close()
 
@@ -125,7 +125,7 @@ async def test_native_thread_hands_off_to_asyncio_loop(monkeypatch):
         worker.join(timeout=2)
         assert not worker.is_alive()
         assert source.revision == 1
-        assert await asyncio.wait_for(source.wait(), 1) == native.Signal("device", 1)
+        assert await asyncio.wait_for(source.wait(), 1) == native.Signal("device", 1, 9)
     finally:
         source.close()
 
@@ -184,7 +184,7 @@ async def test_power_callback_fences_pending_commands_before_loop_scheduling(
         assert source.suspended is (power_type == 4)
         assert source._queue.empty()
         loop.flush()
-        assert await source.wait() == native.Signal("reset", 1)
+        assert await source.wait() == native.Signal("reset", 1, power_type)
     finally:
         source.close()
 
@@ -218,9 +218,9 @@ async def test_power_state_changes_synchronously_and_device_events_do_not_change
         assert source._queue.empty()
         loop.flush()
         assert [await source.wait() for _ in range(3)] == [
-            native.Signal("reset", 1),
-            native.Signal("device", 2),
-            native.Signal("reset", 3),
+            native.Signal("reset", 1, 4),
+            native.Signal("device", 2, 9),
+            native.Signal("reset", 3, 18),
         ]
     finally:
         source.close()

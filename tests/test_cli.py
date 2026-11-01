@@ -68,3 +68,33 @@ def test_windows_stop_persists_marker_before_signaling(tmp_path, monkeypatch):
     monkeypatch.setattr(windows_stop, "signal_stop", signal)
     cli.execute(cli.parser().parse_args(["stop", "--config", str(path)]))
     assert len(calls) == 1
+
+
+def test_run_logs_startup_version_lifecycle_and_bounded_rotation(tmp_path, monkeypatch):
+    import logging
+
+    path = tmp_path / "config.json"
+    Config("192.168.0.20", "HDMI_1", (Device(1, 2),)).save(path)
+    write_private_json(key_path(path), {"tv_ip": "192.168.0.20", "client_key": "secret-key"})
+    monkeypatch.setattr(cli, "run", AsyncMock())
+    monkeypatch.setattr(cli.diagnostics, "health_summary", lambda: "memory=test")
+    logger = logging.getLogger("hdmi_follow")
+    before = list(logger.handlers)
+    old_level = logger.level
+    try:
+        cli.execute(cli.parser().parse_args(["run", "--config", str(path)]))
+        handler = next(handler for handler in logger.handlers if handler not in before)
+        assert handler.maxBytes == 2_000_000
+        assert handler.backupCount == 4
+        content = (tmp_path / "follow.log").read_text(encoding="utf-8")
+        assert f"Helper starting version={cli.__version__}" in content
+        assert "pid=" in content
+        assert "memory=test" in content
+        assert "Helper stopped" in content
+        assert "secret-key" not in content
+    finally:
+        for handler in list(logger.handlers):
+            if handler not in before:
+                logger.removeHandler(handler)
+                handler.close()
+        logger.setLevel(old_level)

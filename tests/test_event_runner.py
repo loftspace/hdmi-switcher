@@ -512,3 +512,195 @@ def test_power_callback_during_inventory_read_vetoes_without_resampling(monkeypa
     monkeypatch.setattr(event_runner, "sample_ownership", sample)
     assert not guard()
     assert samples == 1
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "suspended",
+        "power-revision",
+        "hub-mismatch",
+        "inventory-error",
+        "native-revision-churn",
+        "stale-age",
+    ],
+)
+def test_guard_logs_its_rejection_reason(monkeypatch, pending_guard, caplog, reason):
+    caplog.set_level("INFO", logger=event_runner.__name__)
+    guard, source = pending_guard
+
+    def sample(config):
+        if reason == "inventory-error":
+            raise OSError("secret exception contents")
+        if reason == "native-revision-churn":
+            source.revision += 1
+        return reason != "hub-mismatch"
+
+    monkeypatch.setattr(event_runner, "sample_ownership", sample)
+    if reason == "suspended":
+        source.suspended = True
+    elif reason == "power-revision":
+        source.power_revision += 1
+    elif reason == "stale-age":
+        monkeypatch.setattr(event_runner, "time", SimpleNamespace(time=lambda: 10))
+    assert not guard()
+    assert f"Switch guard rejected reason={reason}" in caplog.text
+    assert "secret exception contents" not in caplog.text
+
+
+def test_guard_rejection_logging_is_limited_per_transition(monkeypatch, caplog):
+    caplog.set_level("INFO", logger=event_runner.__name__)
+    config = Config("192.168.0.20", "HDMI_1", (), switch_hub=HUB)
+    tracker = OwnershipTracker(debounce=0.05)
+    tracker.update(False, 0)
+    tracker.update(False, 0.1)
+    tracker.update(True, 0.2)
+    event = tracker.update(True, 0.3)
+    assert event is not None
+    source = FakeHub()
+    source.suspended = True
+    monkeypatch.setattr(event_runner, "time", SimpleNamespace(time=lambda: 0.3))
+    reasons = set()
+    for _ in range(3):
+        assert not event_runner.event_current(tracker, event, config, source, 0, 0.3, reasons)
+    assert caplog.text.count("Switch guard rejected reason=suspended") == 1
+    source.suspended = False
+    tracker.update(None, 0.3)
+    assert not event_runner.event_current(tracker, event, config, source, 0, 0.3, reasons)
+    assert "Switch guard rejected reason=ownership-generation" in caplog.text
+
+
+async def test_logging_shows_silent_baseline_and_native_debounce_state(
+    monkeypatch, tmp_path, caplog
+):
+    caplog.set_level("INFO", logger=event_runner.__name__)
+    harness = Harness(monkeypatch, tmp_path)
+    await harness.start()
+    assert "Ownership state origin=debounce stable=None->True" in caplog.text
+    assert "silent_baseline=True" in caplog.text
+    harness.present = False
+    harness.hub.device()
+    await harness.until(lambda: harness.sent == [False])
+    assert "USB inventory changed origin=native present=True->False" in caplog.text
+    assert "Ownership state origin=debounce stable=True->False" in caplog.text
+    assert "Hub notification received reason=device native_action=" in caplog.text
+    await harness.finish()
+
+
+async def test_sampling_gap_diagnostic_records_origin_and_prior_state(
+    monkeypatch, tmp_path, caplog
+):
+    caplog.set_level("INFO", logger=event_runner.__name__)
+    monkeypatch.setattr(event_runner, "RECONCILE_INTERVAL", 0.01)
+    harness = Harness(monkeypatch, tmp_path)
+    offset = 0
+    monkeypatch.setattr(
+        event_runner,
+        "time",
+        SimpleNamespace(time=lambda: time.time() + offset, monotonic=time.monotonic),
+    )
+    await harness.start()
+    offset = 3600
+    harness.present = False
+    await harness.until(lambda: harness.tracker.stable is False)
+    assert "Sampling gap origin=reconcile elapsed=3600." in caplog.text
+    assert "prior_stable=True prior_candidate=True" in caplog.text
+    assert "silent baseline reset" in caplog.text
+    assert harness.sent == []
+    await harness.finish()
+
+
+async def test_power_reset_diagnostic_includes_state_and_generation(monkeypatch, tmp_path, caplog):
+    caplog.set_level("INFO", logger=event_runner.__name__)
+    harness = Harness(monkeypatch, tmp_path)
+    await harness.start()
+    harness.hub.power(True)
+    await harness.until(lambda: harness.tracker.stable is None)
+    assert (
+        "Ownership reset reason=native-power-reset origin=native prior_stable=True" in caplog.text
+    )
+    assert "power_revision=1 suspended=True" in caplog.text
+    await harness.finish()
+
+
+async def test_pending_cancel_diagnostic_explains_ownership_generation(
+    monkeypatch, tmp_path, caplog
+):
+    caplog.set_level("INFO", logger=event_runner.__name__)
+    harness = Harness(monkeypatch, tmp_path)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def blocked(*args):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    monkeypatch.setattr(event_runner, "follow_transition", blocked)
+    await harness.start()
+    harness.present = False
+    harness.hub.device()
+    await asyncio.wait_for(started.wait(), 3)
+    harness.present = True
+    harness.hub.device()
+    await asyncio.wait_for(cancelled.wait(), 3)
+    assert "Pending switch cancelled reason=ownership-generation-change generation=" in caplog.text
+    await harness.finish()
+
+
+async def test_heartbeat_is_quiet_before_thirty_seconds_and_then_reports_health(
+    monkeypatch, tmp_path, caplog
+):
+    caplog.set_level("INFO", logger=event_runner.__name__)
+    harness = Harness(monkeypatch, tmp_path)
+    offset = 0
+    monkeypatch.setattr(
+        event_runner,
+        "time",
+        SimpleNamespace(time=time.time, monotonic=lambda: time.monotonic() + offset),
+    )
+    monkeypatch.setattr(event_runner.diagnostics, "health_summary", lambda: "pid=42 rss_mb=12.5")
+    await harness.start()
+    assert "Monitor heartbeat" not in caplog.text
+    offset = 29
+    before = harness.samples
+    harness.hub.device()
+    await harness.until(lambda: harness.samples > before)
+    assert "Monitor heartbeat" not in caplog.text
+    offset = 31
+    harness.hub.device()
+    await harness.until(lambda: "Monitor heartbeat" in caplog.text)
+    assert "present=True stable=True candidate=True" in caplog.text
+    assert "native_revision=2 power_revision=0 suspended=False" in caplog.text
+    assert "pending=none pid=42 rss_mb=12.5" in caplog.text
+    before = harness.samples
+    harness.hub.device()
+    await harness.until(lambda: harness.samples > before)
+    assert caplog.text.count("Monitor heartbeat") == 1
+    await harness.finish()
+
+
+async def test_slow_inventory_diagnostic_logs_duration_without_exception_contents(
+    monkeypatch, tmp_path, caplog
+):
+    caplog.set_level("INFO", logger=event_runner.__name__)
+    harness = Harness(monkeypatch, tmp_path)
+    offset = 0
+
+    def slow_sample(config):
+        nonlocal offset
+        offset += 0.1
+        return harness.sample(config)
+
+    monkeypatch.setattr(event_runner, "sample_ownership", slow_sample)
+    monkeypatch.setattr(
+        event_runner,
+        "time",
+        SimpleNamespace(time=time.time, monotonic=lambda: time.monotonic() + offset),
+    )
+    await harness.start()
+    assert "Slow USB inventory origin=initial duration=0.100s" in caplog.text
+    await harness.finish()

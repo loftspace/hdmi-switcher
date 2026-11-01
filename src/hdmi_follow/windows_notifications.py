@@ -42,6 +42,7 @@ class _PowerSubscribe(ctypes.Structure):
 class Signal:
     reason: str
     revision: int
+    native_action: int | None = None
 
 
 class NotificationError(RuntimeError):
@@ -143,7 +144,9 @@ class HubNotifications:
         with self._lock:
             return self._suspended
 
-    def _signal(self, reason: str, power_type: int | None = None) -> None:
+    def _signal(
+        self, reason: str, power_type: int | None = None, native_action: int | None = None
+    ) -> None:
         with self._lock:
             if self._closed:
                 return
@@ -151,7 +154,9 @@ class HubNotifications:
                 self._power_revision += 1
                 self._suspended = power_type == 4
             self._revision += 1
-            signal = Signal(reason, self._revision)
+            signal = Signal(
+                reason, self._revision, power_type if power_type is not None else native_action
+            )
         # Revision advances before scheduling, fencing a task already on the loop.
         try:
             self._loop.call_soon_threadsafe(self._enqueue, signal)
@@ -181,7 +186,7 @@ class HubNotifications:
             if "\0" not in decoded:
                 return 0
             if decoded.split("\0", 1)[0].upper() == self._instance_id:
-                self._signal("device")
+                self._signal("device", native_action=action)
         except Exception:
             pass  # No Python exception may escape a native callback.
         return 0
