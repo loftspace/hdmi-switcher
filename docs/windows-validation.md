@@ -129,3 +129,13 @@ baseline/gap/reset evidence, bounded heartbeat/outage logging, native memory
 counters, and secret-bearing exception/frame tests. Ruff, formatting and strict
 mypy pass. A TV acknowledgement still does not prove visible HDMI picture.
 Mac hardware validation remains deferred.
+
+Installed 0.1.4 and verified real startup, silent ownership baseline, TV
+connection, 30-second memory/state heartbeats and all shutdown-stage entries.
+Direct launches worked. The existing scheduled task launched an executable but
+did not reach Python startup; a simple script-host comparison also stalled under
+Task Scheduler. This does not establish an application defect. The original
+task action was restored and remains enabled, and the working helper was started
+directly without a visible console. Automatic login startup of this build is
+not yet verified; investigate the scheduler/environment before recommending
+merge. No reboot was attempted and no TV privacy settings were changed.
