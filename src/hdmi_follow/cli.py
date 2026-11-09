@@ -62,7 +62,7 @@ def parser() -> argparse.ArgumentParser:
                 "--away-input", help="Optional: select peer HDMI when devices leave"
             )
             command.add_argument("--device", action="append", type=device_arg)
-            command.add_argument("--switch-hub", help="Full Windows USB switch hub instance ID")
+            command.add_argument("--switch-hub", help="Windows USB hub VID/PID or full instance ID")
             command.add_argument("--overwrite", action="store_true")
         if name == "pair":
             command.add_argument(
@@ -74,7 +74,9 @@ def parser() -> argparse.ArgumentParser:
             command.add_argument("input", choices=[f"HDMI_{i}" for i in range(1, 5)])
         if name == "diagnose":
             command.add_argument("--seconds", type=int, default=30)
-            command.add_argument("--switch-hub", help="Monitor only this Windows USB hub instance")
+            command.add_argument(
+                "--switch-hub", help="Monitor a Windows USB hub by VID/PID or instance ID"
+            )
     return result
 
 
