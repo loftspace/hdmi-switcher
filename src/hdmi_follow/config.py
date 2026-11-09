@@ -61,12 +61,12 @@ class Config:
         if self.switch_hub is not None and (
             not isinstance(self.switch_hub, str)
             or not re.fullmatch(
-                r"USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}[^\\]*\\[^\r\n\x00]+",
+                r"USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}(?:[^\\]*\\[^\r\n\x00]+)?",
                 self.switch_hub,
                 re.IGNORECASE,
             )
         ):
-            raise ValueError("Switch hub must be a full USB device instance ID")
+            raise ValueError("Switch hub must be a USB VID/PID or full device instance ID")
         if not self.devices and not self.switch_hub:
             raise ValueError("Select a switch hub or at least one USB device")
         if self.devices and self.switch_hub:

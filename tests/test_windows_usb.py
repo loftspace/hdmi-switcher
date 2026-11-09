@@ -50,7 +50,18 @@ def test_exact_instance_match_does_not_confuse_other_same_vid_device(monkeypatch
     FakeNative((HUB,)).install(monkeypatch)
     assert windows_usb.is_present(HUB.lower())
     assert not windows_usb.is_present(HUB + "1")
-    assert not windows_usb.is_present(r"USB\VID_0557&PID_2414")
+
+
+def test_hardware_id_matches_after_port_change_and_rejects_ambiguity(monkeypatch):
+    hardware_id = r"USB\VID_0557&PID_2414"
+    moved = hardware_id + r"\DIFFERENT_PORT"
+    FakeNative((moved, hardware_id + r"&MI_00\INTERFACE")).install(monkeypatch)
+    assert windows_usb.is_present(hardware_id.lower())
+    assert not windows_usb.is_present(HUB)
+    FakeNative((HUB, moved)).install(monkeypatch)
+    with pytest.raises(windows_usb.USBEnumerationError, match="Multiple matching USB hubs"):
+        windows_usb.is_present(hardware_id)
+    assert windows_usb.is_present(HUB)
     assert not windows_usb.is_present(HUB.replace("TEST_INSTANCE", "OTHER_INSTANCE"))
 
 

@@ -58,7 +58,7 @@ or `uv run hdmi-follow usb-instances`. That command lists all present USB device
 instances, not just hubs. Confirm it is the switch's hub, then test it:
 
 ```powershell
-uv run hdmi-follow diagnose --seconds 60 --switch-hub 'USB\VID_0557&PID_2414\YOUR_INSTANCE'
+uv run hdmi-follow diagnose --seconds 60 --switch-hub 'USB\VID_0557&PID_2414'
 ```
 
 Unplug/replug only the keyboard: the hub must remain present. Press the switch
@@ -66,13 +66,13 @@ button to the other host and back: the hub must disappear and return. If it does
 not, this detection mode is unsupported by that switch. After verifying, configure:
 
 ```powershell
-uv run hdmi-follow setup --tv-ip 192.168.0.20 --own-input HDMI_1 --away-input HDMI_2 --switch-hub 'USB\VID_0557&PID_2414\YOUR_INSTANCE'
+uv run hdmi-follow setup --tv-ip 192.168.0.20 --own-input HDMI_1 --away-input HDMI_2 --switch-hub 'USB\VID_0557&PID_2414'
 ```
 
 Hub mode uses native Windows Configuration Manager inventory, with no device
 handles, drivers, administrator rights or PowerShell polling. It matches the
-full instance identity; moving the upstream cable to another PC port can change
-that identity and requires reconfiguration. Hub mode is Windows-only.
+USB VID/PID across ports when exactly one matching hub is present. If you have
+two identical hubs, use the full instance ID to select one. Hub mode is Windows-only.
 
 For explicit keyboard/receiver mode:
 

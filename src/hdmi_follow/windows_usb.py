@@ -64,6 +64,20 @@ def present_instances() -> set[str]:
     raise USBEnumerationError("USB inventory kept changing during three enumeration attempts")
 
 
+def is_hardware_id(selector: str) -> bool:
+    return selector.count("\\") == 1
+
+
+def matches_hub(selector: str, instance_id: str) -> bool:
+    selector = selector.upper()
+    instance_id = instance_id.upper()
+    if is_hardware_id(selector):
+        return instance_id.rpartition("\\")[0] == selector
+    return instance_id == selector
+
+
 def is_present(instance_id: str) -> bool:
-    """Match the entire instance ID, never a VID/PID substring."""
-    return instance_id.upper() in present_instances()
+    matches = sum(matches_hub(instance_id, device) for device in present_instances())
+    if matches > 1:
+        raise USBEnumerationError("Multiple matching USB hubs; configure a full instance ID")
+    return matches == 1

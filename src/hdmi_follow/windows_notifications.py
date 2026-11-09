@@ -8,7 +8,10 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
+from hdmi_follow.windows_usb import is_hardware_id, matches_hub
+
 _DWORD = ctypes.c_uint32
+_ALL_DEVICE_INSTANCES = 2
 _HANDLE = ctypes.c_void_p
 _MAX_DEVICE_ID_LEN = 200
 _CALLBACK = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)
@@ -108,8 +111,11 @@ class HubNotifications:
         self._filter = _CMFilter()
         self._filter.size = ctypes.sizeof(_CMFilter)
         self._filter.filter_type = 2
-        for index, unit in enumerate(struct.unpack(f"<{len(encoded) // 2}H", encoded)):
-            self._filter.data.instance_id[index] = unit
+        if is_hardware_id(self._instance_id):
+            self._filter.flags = _ALL_DEVICE_INSTANCES
+        else:
+            for index, unit in enumerate(struct.unpack(f"<{len(encoded) // 2}H", encoded)):
+                self._filter.data.instance_id[index] = unit
         try:
             result = self._api.cm_register(
                 ctypes.byref(self._filter),
@@ -185,7 +191,7 @@ class HubNotifications:
             decoded = units.decode("utf-16-le")
             if "\0" not in decoded:
                 return 0
-            if decoded.split("\0", 1)[0].upper() == self._instance_id:
+            if matches_hub(self._instance_id, decoded.split("\0", 1)[0]):
                 self._signal("device", native_action=action)
         except Exception:
             pass  # No Python exception may escape a native callback.
