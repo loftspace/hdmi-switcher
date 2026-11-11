@@ -17,6 +17,10 @@ from hdmi_follow import tv
 RECONNECT_INTERVAL = 5.0
 COMMAND_TIMEOUT = 4.0
 HEALTH_TIMEOUT = 1.0
+# A reused socket whose last proof of health is older than this may be
+# half-open. Its first reply gets a short wait, then one clean reconnect.
+PROOF_MAX_AGE = 2.0
+PROBE_REPLY_TIMEOUT = 1.5
 LOG = logging.getLogger(__name__)
 
 
@@ -33,6 +37,8 @@ class Session:
         self._closed = False
         self._online = False
         self._failure_type: str | None = None
+        # Monotonic time of the last register, pong or command reply.
+        self._proof: float | None = None
 
     def _report_failure(self, error_type: str) -> None:
         if self._failure_type != error_type:
@@ -51,6 +57,7 @@ class Session:
         # Abort rather than waiting for a close handshake after a command timeout.
         # A subsequent command gets another socket and another unique request ID.
         ws, self._ws = self._ws, None
+        self._proof = None
         if ws is not None:
             if self._online:
                 LOG.info("TV connection disconnected")
@@ -74,6 +81,7 @@ class Session:
             self._key = await tv._register(self._ws, self._key, False)
             if self._closed:
                 raise tv.TVError("TV session is closed")
+            self._proof = time.monotonic()
             # During an outage, registration alone is not proof of recovery:
             # wait for the maintenance pong or a successful command reply.
             if self._failure_type is None:
@@ -105,6 +113,7 @@ class Session:
                 async with asyncio.timeout(HEALTH_TIMEOUT):
                     pong = await ws.ping()
                     await pong
+                self._proof = time.monotonic()
                 self._report_ready()
             except BaseException:
                 self._invalidate()
@@ -124,36 +133,78 @@ class Session:
             if not self._closed and not self._disabled:
                 await asyncio.sleep(RECONNECT_INTERVAL)
 
+    def _needs_probe(self) -> bool:
+        """True when a reused open socket has no recent proof that the TV answers."""
+        if self._ws is None or self._ws.state is not State.OPEN:
+            return False
+        return self._proof is None or time.monotonic() - self._proof > PROOF_MAX_AGE
+
+    async def _launch(
+        self, ws: ClientConnection, request_id: str, target: str, current: Callable[[], bool]
+    ) -> None:
+        if not current():
+            raise tv.StaleRequest("USB ownership changed before the command was sent")
+        LOG.info("TV switch send id=%s target=%s", request_id, target)
+        await ws.send(
+            json.dumps(
+                {
+                    "id": request_id,
+                    "type": "request",
+                    "uri": "ssap://system.launcher/launch",
+                    "payload": {"id": f"com.webos.app.hdmi{target[-1]}"},
+                }
+            )
+        )
+        reply = await tv._receive(ws, request_id)
+        body = reply.get("payload")
+        if not isinstance(body, dict) or body.get("returnValue") is not True:
+            raise tv.TVError("TV did not accept the command")
+        self._proof = time.monotonic()
+
     async def switch(self, target: str, current: Callable[[], bool] = lambda: True) -> None:
-        """Send once on the current socket, only while the USB transition is current."""
+        """Send while the USB transition is current; resend once after a probe timeout.
+
+        A launch that may have reached the TV cannot be recalled. The resend is the
+        same idempotent input launch and is guarded by current() again.
+        """
         if target not in {f"HDMI_{number}" for number in range(1, 5)}:
             raise ValueError("Invalid HDMI input")
         request_id = f"switch-{next(self._ids)}"
         started = time.perf_counter()
         acquired = False
         try:
-            async with asyncio.timeout(COMMAND_TIMEOUT), self._lock:
+            async with asyncio.timeout(COMMAND_TIMEOUT) as budget, self._lock:
                 acquired = True
                 if not current():
                     raise tv.StaleRequest("USB ownership changed before the command was sent")
-                ws = await self._ensure_connected()
-                if not current():
-                    raise tv.StaleRequest("USB ownership changed before the command was sent")
-                LOG.info("TV switch send id=%s target=%s", request_id, target)
-                await ws.send(
-                    json.dumps(
-                        {
-                            "id": request_id,
-                            "type": "request",
-                            "uri": "ssap://system.launcher/launch",
-                            "payload": {"id": f"com.webos.app.hdmi{target[-1]}"},
-                        }
-                    )
-                )
-                reply = await tv._receive(ws, request_id)
-                body = reply.get("payload")
-                if not isinstance(body, dict) or body.get("returnValue") is not True:
-                    raise tv.TVError("TV did not accept the command")
+                sent = False
+                if self._needs_probe():
+                    assert self._ws is not None
+                    try:
+                        async with asyncio.timeout(PROBE_REPLY_TIMEOUT) as probe:
+                            await self._launch(self._ws, request_id, target, current)
+                        sent = True
+                    except TimeoutError:
+                        if not probe.expired():
+                            raise
+                        # The socket may be half-open. A launch that did reach
+                        # the TV cannot be recalled; resending the same input
+                        # is idempotent and is still guarded by current().
+                        LOG.info(
+                            "TV switch probe timeout id=%s target=%s; reconnecting once",
+                            request_id,
+                            target,
+                        )
+                        self._invalidate()
+                        request_id = f"switch-{next(self._ids)}"
+                        budget.reschedule(asyncio.get_running_loop().time() + COMMAND_TIMEOUT)
+                        if not current():
+                            raise tv.StaleRequest(
+                                "USB ownership changed before the command was resent"
+                            ) from None
+                if not sent:
+                    ws = await self._ensure_connected()
+                    await self._launch(ws, request_id, target, current)
                 self._report_ready()
                 LOG.info(
                     "TV switch reply id=%s target=%s duration_ms=%.1f",
@@ -162,7 +213,9 @@ class Session:
                     (time.perf_counter() - started) * 1000,
                 )
         except tv.StaleRequest:
-            # No command was sent. The healthy warm connection is still useful.
+            # Usually no command was sent and the warm connection stays. After a
+            # probe timeout the first launch was sent and may have landed; only
+            # the resend was dropped, and that socket is already discarded.
             LOG.info(
                 "TV switch stale id=%s target=%s duration_ms=%.1f",
                 request_id,

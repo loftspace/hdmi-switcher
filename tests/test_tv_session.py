@@ -348,3 +348,89 @@ async def test_idle_health_does_not_queue_behind_active_switch(monkeypatch):
         release.set()
         await active
         await session.close()
+
+
+def silent_after_first_command(connections, commands):
+    """First socket goes silent after the launch, like a half-open connection."""
+
+    async def handler(ws):
+        connections.append(ws)
+        number = len(connections)
+        await registered(ws)
+        with suppress(ConnectionClosed):
+            async for frame in ws:
+                request = json.loads(frame)
+                commands.append(request)
+                if number > 1:
+                    await acknowledge(ws, request)
+
+    return handler
+
+
+async def test_silent_warm_socket_reconnects_once_and_lands(monkeypatch):
+    connections = []
+    commands = []
+    monkeypatch.setattr(tv_session, "PROBE_REPLY_TIMEOUT", 0.05)
+
+    async with fake_tv(monkeypatch, silent_after_first_command(connections, commands)):
+        session = tv_session.Session("192.168.0.20", "key")
+        try:
+            await session._warm_once()
+            session._proof = 0.0
+            started = asyncio.get_running_loop().time()
+            await session.switch("HDMI_2")
+            elapsed = asyncio.get_running_loop().time() - started
+        finally:
+            await session.close()
+    assert len(connections) == 2
+    assert [request["payload"] for request in commands] == [{"id": "com.webos.app.hdmi2"}] * 2
+    assert commands[0]["id"] != commands[1]["id"]
+    assert elapsed < 1.0
+
+
+async def test_silent_warm_socket_never_resends_an_obsolete_transition(monkeypatch):
+    connections = []
+    commands = []
+    monkeypatch.setattr(tv_session, "PROBE_REPLY_TIMEOUT", 0.05)
+
+    def current():
+        # The transition becomes obsolete once the first launch has been sent.
+        return not commands
+
+    async with fake_tv(monkeypatch, silent_after_first_command(connections, commands)):
+        session = tv_session.Session("192.168.0.20", "key")
+        try:
+            await session._warm_once()
+            session._proof = 0.0
+            with pytest.raises(tv.StaleRequest):
+                await session.switch("HDMI_2", current)
+        finally:
+            await session.close()
+    assert len(connections) == 1
+    assert len(commands) == 1
+
+
+async def test_recently_proven_socket_keeps_full_reply_budget(monkeypatch):
+    connections = []
+    commands = []
+    monkeypatch.setattr(tv_session, "PROBE_REPLY_TIMEOUT", 0.05)
+
+    async def handler(ws):
+        connections.append(ws)
+        await registered(ws)
+        with suppress(ConnectionClosed):
+            async for frame in ws:
+                request = json.loads(frame)
+                commands.append(request)
+                await asyncio.sleep(0.15)
+                await acknowledge(ws, request)
+
+    async with fake_tv(monkeypatch, handler):
+        session = tv_session.Session("192.168.0.20", "key")
+        try:
+            await session._warm_once()
+            await session.switch("HDMI_1")
+        finally:
+            await session.close()
+    assert len(connections) == 1
+    assert len(commands) == 1

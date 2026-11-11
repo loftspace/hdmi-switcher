@@ -143,3 +143,73 @@ async def test_real_socket_disconnect_reconnects_once(config, monkeypatch):
             await session.close()
     assert len(commands) == 2
     assert commands[0]["id"] != commands[1]["id"]
+
+
+async def test_silent_warm_socket_switch_lands_inside_age_budget(config, monkeypatch):
+    """Scaled model of finding #1: a 4 s timeout plus retry used to outlive the 5 s guard."""
+    import asyncio
+    import json
+    import time
+    from contextlib import suppress
+
+    from websockets.asyncio.client import connect
+    from websockets.asyncio.server import serve
+    from websockets.exceptions import ConnectionClosed
+
+    from hdmi_follow import tv, tv_session
+    from hdmi_follow.tv_session import Session
+
+    # Same ratios as production: command timeout 4 s, retry pause 0.5 s,
+    # age guard 5 s. Scaled so the old path goes stale before its retry.
+    monkeypatch.setattr(tv_session, "COMMAND_TIMEOUT", 0.4)
+    monkeypatch.setattr(tv_session, "PROBE_REPLY_TIMEOUT", 0.1)
+    age_limit = 0.5
+    connections = []
+    commands = []
+
+    async def server(ws):
+        connections.append(ws)
+        number = len(connections)
+        await ws.recv()
+        await ws.send(
+            json.dumps({"id": "register", "type": "registered", "payload": {"client-key": "key"}})
+        )
+        with suppress(ConnectionClosed):
+            async for frame in ws:
+                command = json.loads(frame)
+                commands.append(command)
+                if number > 1:
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "id": command["id"],
+                                "type": "response",
+                                "payload": {"returnValue": True},
+                            }
+                        )
+                    )
+
+    async with serve(server, "127.0.0.1", 0) as endpoint:
+        port = endpoint.sockets[0].getsockname()[1]
+        monkeypatch.setattr(
+            tv,
+            "_connect",
+            lambda _: connect(f"ws://127.0.0.1:{port}", proxy=None, close_timeout=0.1),
+        )
+        session = Session(config.tv_ip, "key")
+        try:
+            await session._warm_once()
+            # The last pong is old: the TV may have dropped off since.
+            session._proof = 0.0
+            created = time.monotonic()
+
+            def current():
+                return time.monotonic() - created <= age_limit
+
+            await runner.follow_transition(config, "key", Transition(False, 1), current, session)
+            await asyncio.sleep(0)
+        finally:
+            await session.close()
+    assert len(connections) == 2
+    assert len(commands) == 2
+    assert all(c["payload"] == {"id": "com.webos.app.hdmi2"} for c in commands)
