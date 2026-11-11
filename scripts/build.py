@@ -11,6 +11,16 @@ import zipfile
 from pathlib import Path
 
 
+def check_version(command: list[str], expected: str, cwd: Path) -> None:
+    """Run a built binary with --version and fail unless it prints the expected version."""
+    result = subprocess.run(
+        [*command, "--version"], check=True, cwd=cwd, capture_output=True, text=True
+    )
+    reported = result.stdout.strip()
+    if reported != expected:
+        raise SystemExit(f"Built binary reports version {reported!r}, expected {expected!r}.")
+
+
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
     version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
@@ -57,7 +67,9 @@ def main() -> None:
             command.append("--windowed")
         command.append(str(entry))
         subprocess.run(command, cwd=root, check=True)
-    subprocess.run([str(staging / f"hdmi-follow{suffix}"), "--help"], check=True, cwd=root)
+    cli_binary = str(staging / f"hdmi-follow{suffix}")
+    subprocess.run([cli_binary, "--help"], check=True, cwd=root)
+    check_version([cli_binary], version, root)
     output = root / "dist" / "release"
     output.mkdir(parents=True, exist_ok=True)
     archive = output / f"HDMI-Follow-{target}-{version}.zip"

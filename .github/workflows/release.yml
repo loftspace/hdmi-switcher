@@ -3,6 +3,10 @@ name: Release
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
 
 permissions:
   contents: read
@@ -16,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      skip: ${{ steps.version.outputs.skip }}
     steps:
       - uses: actions/checkout@v4
       - id: version
@@ -24,15 +29,17 @@ jobs:
         run: |
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          if gh release view "v$version" >/dev/null 2>&1; then
-            echo "Release v$version already exists; bump the version in a PR."
-            exit 1
-          fi
           # Fail closed on API/authentication errors instead of treating them as no release.
-          gh api repos/${{ github.repository }}/releases --jq '.[].tag_name' > existing-tags.txt
-          if grep -Fx "v$version" existing-tags.txt; then exit 1; fi
+          gh api --paginate repos/${{ github.repository }}/releases --jq '.[].tag_name' > existing-tags.txt
+          if grep -Fxq "v$version" existing-tags.txt; then
+            echo "::notice::Release v$version already exists; skipping. Bump the version in a PR to release."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
   package:
     needs: version
+    if: needs.version.outputs.skip == 'false'
     strategy:
       fail-fast: false
       matrix:
@@ -46,6 +53,7 @@ jobs:
           python-version: '3.12'
       - run: uv sync --frozen --group dev
       - run: uv run ruff check .
+      - run: uv run ruff format --check .
       - run: uv run mypy src
       - run: uv run pytest
       - run: uv run python scripts/build.py
@@ -56,6 +64,7 @@ jobs:
           if-no-files-found: error
   publish:
     needs: [version, package]
+    if: needs.version.outputs.skip == 'false'
     runs-on: ubuntu-latest
     permissions:
       contents: write
