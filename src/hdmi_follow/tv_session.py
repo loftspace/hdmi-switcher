@@ -162,7 +162,11 @@ class Session:
         self._proof = time.monotonic()
 
     async def switch(self, target: str, current: Callable[[], bool] = lambda: True) -> None:
-        """Send once on the current socket, only while the USB transition is current."""
+        """Send while the USB transition is current; resend once after a probe timeout.
+
+        A launch that may have reached the TV cannot be recalled. The resend is the
+        same idempotent input launch and is guarded by current() again.
+        """
         if target not in {f"HDMI_{number}" for number in range(1, 5)}:
             raise ValueError("Invalid HDMI input")
         request_id = f"switch-{next(self._ids)}"
@@ -209,7 +213,9 @@ class Session:
                     (time.perf_counter() - started) * 1000,
                 )
         except tv.StaleRequest:
-            # No command was sent. The healthy warm connection is still useful.
+            # Usually no command was sent and the warm connection stays. After a
+            # probe timeout the first launch was sent and may have landed; only
+            # the resend was dropped, and that socket is already discarded.
             LOG.info(
                 "TV switch stale id=%s target=%s duration_ms=%.1f",
                 request_id,
