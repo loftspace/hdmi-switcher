@@ -134,6 +134,19 @@ def _request_stop(path: Path, reason: str = "cli_stop") -> None:
         signal_stop(stop_file)
 
 
+def _wait_for_exit(path: Path, timeout: float = 3.0) -> bool:
+    """Wait, bounded, until the helper releases its run lock."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            with instance_lock(path.with_name("run.lock")):
+                return True
+        except AlreadyRunning:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.1)
+
+
 def execute(args: argparse.Namespace) -> None:
     path: Path = args.config.expanduser().resolve()
     if args.command == "usb-instances":
@@ -167,6 +180,9 @@ def execute(args: argparse.Namespace) -> None:
         return
     if args.command == "uninstall":
         _request_stop(path, "uninstall")
+        # Let the helper record a clean exit before autostart removal ends the task.
+        if not _wait_for_exit(path):
+            print("Helper still running after 3 seconds")
         print(autostart.uninstall())
         print("Stop requested. Configuration and credentials retained")
         return
