@@ -121,3 +121,18 @@ def test_run_logs_startup_version_lifecycle_and_bounded_rotation(tmp_path, monke
                 logger.removeHandler(handler)
                 handler.close()
         logger.setLevel(old_level)
+
+
+def test_duplicate_run_exits_successfully(tmp_path, monkeypatch, capsys):
+    from hdmi_follow.instance import instance_lock
+
+    path = tmp_path / "config.json"
+    Config("192.168.0.20", "HDMI_1", (Device(1, 2),)).save(path)
+    write_private_json(key_path(path), {"tv_ip": "192.168.0.20", "client_key": "key"})
+    run = AsyncMock()
+    monkeypatch.setattr(cli, "run", run)
+    monkeypatch.setattr(cli.sys, "argv", ["hdmi-follow", "run", "--config", str(path)])
+    with instance_lock(path.with_name("run.lock")):
+        cli.main()  # Returns normally: exit code 0, so launchd does not relaunch it.
+    run.assert_not_called()
+    assert "already running" in capsys.readouterr().err

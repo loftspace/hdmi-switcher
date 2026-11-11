@@ -8,6 +8,7 @@ import plistlib
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import cast
 from xml.etree import ElementTree as ET
@@ -16,6 +17,11 @@ TASK_NAME = "HDMIFollow"
 LABEL = "org.loftspace.hdmi-follow"
 MARKER = "HDMI Follow managed login entry (org.loftspace.hdmi-follow)"
 TASK_NS = "http://schemas.microsoft.com/windows/2004/02/mit/task"
+# launchctl bootout returns before the job is gone; bound the wait and retries.
+UNLOAD_POLLS = 50
+POLL_SECONDS = 0.1
+BOOTSTRAP_ATTEMPTS = 3
+BOOTSTRAP_RETRY_SECONDS = 1.0
 
 
 def _command(config_path: Path) -> list[str]:
@@ -121,6 +127,38 @@ def _mac_domain() -> str:
     return f"gui/{getuid()}"
 
 
+def _launchagent_loaded(target: str) -> bool:
+    return _run(["launchctl", "print", target], check=False).returncode == 0
+
+
+def _unload_launchagent(target: str) -> None:
+    _run(["launchctl", "bootout", target], check=False)
+    for _ in range(UNLOAD_POLLS):
+        if not _launchagent_loaded(target):
+            return
+        time.sleep(POLL_SECONDS)
+    raise RuntimeError(
+        "The running HDMI Follow LaunchAgent did not stop, so the login entry was left "
+        "unchanged. Run install again."
+    )
+
+
+def _bootstrap_launchagent(domain: str, path: Path) -> None:
+    detail = ""
+    for attempt in range(BOOTSTRAP_ATTEMPTS):
+        if attempt:
+            time.sleep(BOOTSTRAP_RETRY_SECONDS)
+        result = _run(["launchctl", "bootstrap", domain, str(path)], check=False)
+        if result.returncode == 0:
+            return
+        detail = (result.stderr or result.stdout or "").strip()[:200]
+        detail = detail or f"exit code {result.returncode}"
+    raise RuntimeError(
+        f"launchctl could not load the LaunchAgent ({detail}). {path} was written but "
+        "nothing is loaded. Run install again, or run uninstall to remove it."
+    )
+
+
 def install(config_path: Path) -> str:
     """Install or update an owned login entry without changing other startup items."""
     if not config_path.is_file():
@@ -151,12 +189,15 @@ def install(config_path: Path) -> str:
             "StandardOutPath": str(config_path.resolve().parent / "autostart.log"),
             "StandardErrorPath": str(config_path.resolve().parent / "autostart.log"),
         }
-        if exists:
-            _run(["launchctl", "bootout", f"{_mac_domain()}/{LABEL}"], check=False)
+        domain = _mac_domain()
+        target = f"{domain}/{LABEL}"
+        # A job can still be loaded after its plist was deleted.
+        if exists or _launchagent_loaded(target):
+            _unload_launchagent(target)
         with path.open("wb") as output:
             plistlib.dump(data, output)
         path.chmod(0o600)
-        _run(["launchctl", "bootstrap", _mac_domain(), str(path)])
+        _bootstrap_launchagent(domain, path)
         return "macOS login LaunchAgent installed and started."
     raise RuntimeError("Login installation supports Windows and macOS only.")
 

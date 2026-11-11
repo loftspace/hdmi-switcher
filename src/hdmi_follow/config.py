@@ -1,5 +1,6 @@
 """Validated local configuration and pairing storage."""
 
+import base64
 import ipaddress
 import json
 import os
@@ -8,6 +9,8 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+
+from hdmi_follow import windows_dpapi
 
 
 def data_dir() -> Path:
@@ -103,5 +106,39 @@ def load_key(path: Path, tv_ip: str) -> str | None:
     data = json.loads(path.read_text(encoding="utf-8"))
     if data.get("tv_ip") != tv_ip:
         return None
+    value = _stored_key(data)
+    if value and sys.platform == "win32" and "client_key" in data:
+        try:
+            save_key(path, tv_ip, value)  # Migrate a plaintext key from older versions.
+        except OSError:
+            pass  # The key still works; the next pairing writes the protected form.
+    return value
+
+
+_PROTECTED_KEY = "client_key_dpapi"
+
+
+def _stored_key(data: dict[str, Any]) -> str | None:
+    protected = data.get(_PROTECTED_KEY)
+    if protected is not None:
+        try:
+            plain = windows_dpapi.unprotect(base64.b64decode(protected, validate=True))
+            return plain.decode("utf-8") or None
+        except (OSError, ValueError, TypeError):
+            print(
+                "HDMI Follow: the saved pairing key cannot be unlocked by this Windows user "
+                "on this computer. Run pair again.",
+                file=sys.stderr,
+            )
+            return None
     value = data.get("client_key")
     return value if isinstance(value, str) and value else None
+
+
+def save_key(path: Path, tv_ip: str, key: str) -> None:
+    """Store the pairing key; on Windows only the current user can decrypt it."""
+    if sys.platform == "win32":
+        blob = base64.b64encode(windows_dpapi.protect(key.encode("utf-8"))).decode("ascii")
+        write_private_json(path, {"tv_ip": tv_ip, _PROTECTED_KEY: blob})
+    else:
+        write_private_json(path, {"tv_ip": tv_ip, "client_key": key})
