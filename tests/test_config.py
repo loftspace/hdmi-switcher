@@ -48,6 +48,70 @@ def test_invalid_usb_identifiers_rejected(vendor, product):
         Device(vendor, product)
 
 
+@pytest.mark.parametrize("content", ["", '{"tv_ip": "192.168', "[]", '"text"', "null"])
+def test_corrupt_key_file_counts_as_no_key(tmp_path, caplog, content):
+    path = tmp_path / "credentials.json"
+    path.write_text(content + "secret-marker", encoding="utf-8")
+    with caplog.at_level("WARNING", logger="hdmi_follow"):
+        assert load_key(path, "192.168.0.20") is None
+    assert "secret-marker" not in caplog.text
+
+
+@pytest.mark.parametrize("content", ["[]", '"text"', "null", "3"])
+def test_non_object_key_file_counts_as_no_key(tmp_path, caplog, content):
+    path = tmp_path / "credentials.json"
+    path.write_text(content, encoding="utf-8")
+    with caplog.at_level("WARNING", logger="hdmi_follow"):
+        assert load_key(path, "192.168.0.20") is None
+    assert "unexpected type" in caplog.text
+
+
+def test_unreadable_key_file_counts_as_no_key(tmp_path, monkeypatch):
+    path = tmp_path / "credentials.json"
+    path.write_text("{}", encoding="utf-8")
+
+    def fail(*args, **kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(config_module.Path, "read_text", fail)
+    assert load_key(path, "192.168.0.20") is None
+
+
+def test_private_write_failure_keeps_old_file_and_removes_temp(tmp_path, monkeypatch):
+    path = tmp_path / "credentials.json"
+    write_private_json(path, {"client_key": "old"})
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(config_module.os, "replace", fail)
+    with pytest.raises(OSError, match="disk full"):
+        write_private_json(path, {"client_key": "new"})
+    assert json.loads(path.read_text())["client_key"] == "old"
+    assert [p.name for p in tmp_path.iterdir()] == ["credentials.json"]
+
+
+def test_private_write_serialization_failure_removes_temp(tmp_path):
+    path = tmp_path / "config.json"
+    with pytest.raises(TypeError):
+        write_private_json(path, {"bad": object()})
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_private_write_syncs_before_replace(tmp_path, monkeypatch):
+    calls = []
+    real_fsync, real_replace = config_module.os.fsync, config_module.os.replace
+    monkeypatch.setattr(
+        config_module.os, "fsync", lambda fd: (calls.append("fsync"), real_fsync(fd))
+    )
+    monkeypatch.setattr(
+        config_module.os, "replace", lambda a, b: (calls.append("replace"), real_replace(a, b))
+    )
+    write_private_json(tmp_path / "config.json", {"a": 1})
+    assert calls == ["fsync", "replace"]
+    assert [p.name for p in tmp_path.iterdir()] == ["config.json"]
+
+
 def _fake_dpapi(monkeypatch, *, fail=False):
     monkeypatch.setattr(config_module.sys, "platform", "win32")
     monkeypatch.setattr(config_module.windows_dpapi, "protect", lambda data: b"sealed:" + data)

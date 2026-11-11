@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from hdmi_follow import cli
-from hdmi_follow.config import Config, Device, key_path, write_private_json
+from hdmi_follow.config import Config, Device, key_path, load_key, write_private_json
 
 
 def test_inputs_uses_supported_lg_endpoint(tmp_path, monkeypatch):
@@ -121,6 +121,58 @@ def test_run_logs_startup_version_lifecycle_and_bounded_rotation(tmp_path, monke
                 logger.removeHandler(handler)
                 handler.close()
         logger.setLevel(old_level)
+
+
+def test_uninstall_waits_for_helper_exit_before_removing_autostart(tmp_path, monkeypatch):
+    import threading
+
+    from hdmi_follow import windows_stop
+    from hdmi_follow.instance import instance_lock
+
+    path = tmp_path / "config.json"
+    monkeypatch.setattr(windows_stop, "signal_stop", lambda stop_file: True)
+    holding = threading.Event()
+    released = threading.Event()
+
+    def helper():
+        with instance_lock(path.with_name("run.lock")):
+            holding.set()
+            while not path.with_name("stop").exists():
+                cli.time.sleep(0.01)
+            cli.time.sleep(0.2)
+        released.set()
+
+    thread = threading.Thread(target=helper)
+    thread.start()
+    assert holding.wait(5)
+    seen = []
+    monkeypatch.setattr(cli.autostart, "uninstall", lambda: seen.append(released.is_set()) or "ok")
+    cli.execute(cli.parser().parse_args(["uninstall", "--config", str(path)]))
+    thread.join(5)
+    assert seen == [True]
+
+
+def test_uninstall_wait_is_bounded(tmp_path, monkeypatch):
+    from hdmi_follow.instance import instance_lock
+
+    path = tmp_path / "config.json"
+    with instance_lock(path.with_name("run.lock")):
+        start = cli.time.monotonic()
+        assert cli._wait_for_exit(path, timeout=0.3) is False
+        assert cli.time.monotonic() - start < 2
+    assert cli._wait_for_exit(path, timeout=0.3) is True
+
+
+@pytest.mark.parametrize("content", ['{"tv_ip": "192.168', "[]"])
+def test_pair_repairs_corrupt_credentials(tmp_path, monkeypatch, content):
+    path = tmp_path / "config.json"
+    Config("192.168.0.20", "HDMI_1", (Device(1, 2),)).save(path)
+    key_path(path).write_text(content, encoding="utf-8")
+    pair = AsyncMock(return_value="fresh")
+    monkeypatch.setattr(cli.tv, "pair", pair)
+    cli.execute(cli.parser().parse_args(["pair", "--config", str(path)]))
+    pair.assert_awaited_once_with("192.168.0.20", None)
+    assert load_key(key_path(path), "192.168.0.20") == "fresh"
 
 
 def test_duplicate_run_exits_successfully(tmp_path, monkeypatch, capsys):

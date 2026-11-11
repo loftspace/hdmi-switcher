@@ -27,3 +27,19 @@ jobs:
       - run: uv run mypy src
       - run: uv run pytest
       - run: uv build
+  package:
+    # Run the native PyInstaller build before merge, not first in the release run.
+    if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: '3.12'
+      - run: uv sync --frozen --group dev
+      - run: uv run python scripts/build.py
