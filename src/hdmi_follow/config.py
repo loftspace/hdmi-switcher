@@ -2,12 +2,16 @@
 
 import ipaddress
 import json
+import logging
 import os
 import re
 import sys
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 
 def data_dir() -> Path:
@@ -85,12 +89,18 @@ class Config:
 
 def write_private_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temp = path.with_suffix(".tmp")
-    with temp.open("w", encoding="utf-8") as stream:
-        os.chmod(temp, 0o600)
-        json.dump(data, stream, indent=2)
-        stream.write("\n")
-    temp.replace(path)
+    # mkstemp creates a unique file with O_EXCL and mode 0600 in the same folder.
+    handle, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temp = Path(name)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump(data, stream, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def key_path(config_path: Path) -> Path:
@@ -100,7 +110,15 @@ def key_path(config_path: Path) -> Path:
 def load_key(path: Path, tv_ip: str) -> str | None:
     if not path.exists():
         return None
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        # Never log the content: it may hold the pairing key.
+        log.warning("Ignoring unreadable pairing key file: %s", type(exc).__name__)
+        return None
+    if not isinstance(data, dict):
+        log.warning("Ignoring pairing key file with unexpected type: %s", type(data).__name__)
+        return None
     if data.get("tv_ip") != tv_ip:
         return None
     value = data.get("client_key")
