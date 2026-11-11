@@ -81,6 +81,19 @@ def test_windows_plaintext_key_migrates_on_load(tmp_path, monkeypatch):
     assert load_key(path, "192.168.0.20") == "secret"
 
 
+def test_windows_failed_migration_keeps_working_plaintext_key(tmp_path, monkeypatch):
+    _fake_dpapi(monkeypatch)
+
+    def refuse(data):
+        raise OSError(5, "CryptProtectData failed")
+
+    monkeypatch.setattr(config_module.windows_dpapi, "protect", refuse)
+    path = tmp_path / "credentials.json"
+    write_private_json(path, {"tv_ip": "192.168.0.20", "client_key": "secret"})
+    assert load_key(path, "192.168.0.20") == "secret"
+    assert json.loads(path.read_text()) == {"tv_ip": "192.168.0.20", "client_key": "secret"}
+
+
 def test_windows_undecryptable_key_counts_as_missing(tmp_path, monkeypatch, capsys):
     _fake_dpapi(monkeypatch)
     path = tmp_path / "credentials.json"
