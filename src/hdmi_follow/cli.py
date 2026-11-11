@@ -18,7 +18,7 @@ from hdmi_follow.config import (
     default_config,
     key_path,
     load_key,
-    write_private_json,
+    save_key,
 )
 from hdmi_follow.devices import enumerate_devices
 from hdmi_follow.instance import AlreadyRunning, instance_lock
@@ -224,7 +224,7 @@ def execute(args: argparse.Namespace) -> None:
         else:
             print("Accept the HDMI Follow connection prompt on the TV, if shown", flush=True)
             key = asyncio.run(tv.pair(config.tv_ip, key))
-        write_private_json(credentials, {"tv_ip": config.tv_ip, "client_key": key})
+        save_key(credentials, config.tv_ip, key)
         print("Pairing saved locally")
         return
     if not key:
@@ -334,12 +334,14 @@ def main() -> None:
         execute(parser().parse_args())
     except KeyboardInterrupt:
         pass
+    except AlreadyRunning as exc:
+        # Exit 0 so launchd KeepAlive (SuccessfulExit=false) does not relaunch a duplicate.
+        print(f"HDMI Follow: {exc}; this duplicate start exits cleanly", file=sys.stderr)
     except (
         ValueError,
         OSError,
         RuntimeError,
         tv.TVError,
-        AlreadyRunning,
         TimeoutError,
         KeyError,
         TypeError,

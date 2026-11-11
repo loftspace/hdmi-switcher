@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from hdmi_follow import cli
-from hdmi_follow.config import Config, Device, key_path, write_private_json
+from hdmi_follow.config import Config, Device, key_path, load_key, write_private_json
 
 
 def test_inputs_uses_supported_lg_endpoint(tmp_path, monkeypatch):
@@ -172,4 +172,19 @@ def test_pair_repairs_corrupt_credentials(tmp_path, monkeypatch, content):
     monkeypatch.setattr(cli.tv, "pair", pair)
     cli.execute(cli.parser().parse_args(["pair", "--config", str(path)]))
     pair.assert_awaited_once_with("192.168.0.20", None)
-    assert json.loads(key_path(path).read_text())["client_key"] == "fresh"
+    assert load_key(key_path(path), "192.168.0.20") == "fresh"
+
+
+def test_duplicate_run_exits_successfully(tmp_path, monkeypatch, capsys):
+    from hdmi_follow.instance import instance_lock
+
+    path = tmp_path / "config.json"
+    Config("192.168.0.20", "HDMI_1", (Device(1, 2),)).save(path)
+    write_private_json(key_path(path), {"tv_ip": "192.168.0.20", "client_key": "key"})
+    run = AsyncMock()
+    monkeypatch.setattr(cli, "run", run)
+    monkeypatch.setattr(cli.sys, "argv", ["hdmi-follow", "run", "--config", str(path)])
+    with instance_lock(path.with_name("run.lock")):
+        cli.main()  # Returns normally: exit code 0, so launchd does not relaunch it.
+    run.assert_not_called()
+    assert "already running" in capsys.readouterr().err

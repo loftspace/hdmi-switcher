@@ -95,7 +95,11 @@ def test_mac_launchagent_preserves_paths_and_uses_argument_array(monkeypatch, tm
     config = tmp_path / "Folder & spaces" / "config.json"
     config.parent.mkdir()
     config.write_text("{}")
-    run = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
+    run = Mock(
+        side_effect=lambda command, check=True: subprocess.CompletedProcess(
+            command, 1 if command[1] == "print" else 0, "", ""
+        )
+    )
     monkeypatch.setattr(autostart, "_run", run)
     autostart.install(config)
     with agent.open("rb") as source:
@@ -104,7 +108,8 @@ def test_mac_launchagent_preserves_paths_and_uses_argument_array(monkeypatch, tm
     assert data["ProgramArguments"][-3:] == ["run", "--config", str(config.resolve())]
     assert data["KeepAlive"] == {"SuccessfulExit": False}
     assert data["EnvironmentVariables"]["HDMI_FOLLOW_AUTOSTART_OWNER"] == autostart.MARKER
-    run.assert_called_once_with(["launchctl", "bootstrap", "gui/501", str(agent)])
+    assert run.call_args_list[-1].args[0] == ["launchctl", "bootstrap", "gui/501", str(agent)]
+    assert [call.args[0][1] for call in run.call_args_list] == ["print", "bootstrap"]
 
 
 def test_mac_refuses_to_overwrite_unrelated_launchagent(monkeypatch, tmp_path):
@@ -166,3 +171,89 @@ def test_failed_task_inspection_does_not_allow_replacement(monkeypatch):
     monkeypatch.setattr(autostart, "_run", run)
     with pytest.raises(RuntimeError, match="Cannot inspect"):
         autostart._windows_task()
+
+
+def _managed_launchagent(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        plistlib.dumps(
+            {
+                "Label": autostart.LABEL,
+                "EnvironmentVariables": {"HDMI_FOLLOW_AUTOSTART_OWNER": autostart.MARKER},
+                "ProgramArguments": ["old"],
+            }
+        )
+    )
+
+
+class _Launchctl:
+    """Fake launchctl: the job stays loaded for a few polls after bootout."""
+
+    def __init__(self, unload_after, bootstrap_codes):
+        self.unload_after = unload_after
+        self.bootstrap_codes = list(bootstrap_codes)
+        self.calls = []
+
+    def __call__(self, command, check=True):
+        assert check is False
+        verb = command[1]
+        self.calls.append(verb)
+        if verb == "print":
+            loaded = self.calls.count("print") <= self.unload_after
+            return subprocess.CompletedProcess(command, 0 if loaded else 113, "", "")
+        if verb == "bootstrap":
+            code = self.bootstrap_codes.pop(0)
+            stderr = "Bootstrap failed: 5: Input/output error" if code else ""
+            return subprocess.CompletedProcess(command, code, "", stderr)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+
+def _mac_setup(monkeypatch, tmp_path, launchctl):
+    monkeypatch.setattr(autostart.sys, "platform", "darwin")
+    monkeypatch.setattr(autostart, "_mac_domain", lambda: "gui/501")
+    monkeypatch.setattr(autostart.time, "sleep", lambda seconds: None)
+    agent = tmp_path / "LaunchAgents" / f"{autostart.LABEL}.plist"
+    monkeypatch.setattr(autostart, "_launchagent_path", lambda: agent)
+    monkeypatch.setattr(autostart, "_run", launchctl)
+    config = tmp_path / "config.json"
+    config.write_text("{}")
+    return agent, config
+
+
+def test_mac_reinstall_waits_for_unload_and_retries_bootstrap(monkeypatch, tmp_path):
+    launchctl = _Launchctl(unload_after=2, bootstrap_codes=[5, 0])
+    agent, config = _mac_setup(monkeypatch, tmp_path, launchctl)
+    _managed_launchagent(agent)
+    assert "started" in autostart.install(config)
+    assert launchctl.calls == ["bootout", "print", "print", "print", "bootstrap", "bootstrap"]
+    assert plistlib.loads(agent.read_bytes())["ProgramArguments"][-2:] == [
+        "--config",
+        str(config.resolve()),
+    ]
+
+
+def test_mac_install_unloads_job_whose_plist_is_missing(monkeypatch, tmp_path):
+    launchctl = _Launchctl(unload_after=1, bootstrap_codes=[0])
+    _agent, config = _mac_setup(monkeypatch, tmp_path, launchctl)
+    autostart.install(config)
+    assert launchctl.calls == ["print", "bootout", "print", "bootstrap"]
+
+
+def test_mac_reinstall_keeps_plist_when_old_job_does_not_stop(monkeypatch, tmp_path):
+    launchctl = _Launchctl(unload_after=10_000, bootstrap_codes=[])
+    agent, config = _mac_setup(monkeypatch, tmp_path, launchctl)
+    _managed_launchagent(agent)
+    with pytest.raises(RuntimeError, match="did not stop"):
+        autostart.install(config)
+    assert launchctl.calls.count("print") == autostart.UNLOAD_POLLS
+    assert "bootstrap" not in launchctl.calls
+    assert plistlib.loads(agent.read_bytes())["ProgramArguments"] == ["old"]
+
+
+def test_mac_failed_bootstrap_reports_clear_error(monkeypatch, tmp_path):
+    launchctl = _Launchctl(unload_after=0, bootstrap_codes=[5] * autostart.BOOTSTRAP_ATTEMPTS)
+    agent, config = _mac_setup(monkeypatch, tmp_path, launchctl)
+    _managed_launchagent(agent)
+    with pytest.raises(RuntimeError, match="Input/output error.*nothing is loaded"):
+        autostart.install(config)
+    assert launchctl.calls.count("bootstrap") == autostart.BOOTSTRAP_ATTEMPTS
