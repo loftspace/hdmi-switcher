@@ -174,3 +174,27 @@ interval. The helper connected to the real TV. No forced-kill or service-stop
 test was performed on the user's active session.
 Native process ancestry also confirmed the running background bootloader was
 launched by a Windows service host, rather than the manual Codex process.
+
+## 0.2.2: stalls no longer drop switches (2026-11-27, issue #13)
+
+Incident, 2026-11-26 about 23:27 to 23:36 (installed 0.2.1):
+- Gaps between ownership samples reached 5.0 to 30.9 s. Some had a slow USB
+  inventory (up to 9.5 s); several had none logged, so the loop also stalled
+  outside the measured call. The cause of the stalls was not found.
+- No suspend notification arrived. Lowest free RAM in the heartbeats was 16.2 GB
+  and lowest free commit 9.7 GB; no Windows low-memory events since 20:00.
+  Free commit fell by about 8 GB when the stalls began.
+- Each gap over 5 s reset the tracker. The hub left at 23:29:32 right after a
+  reset, so no command was sent.
+- Separately, the TV connection was down from 23:36:49 to 00:33:15. Cause unknown.
+  This version does not change that.
+
+Change (hub mode only; keyboard mode keeps the 5 s rule): a gap up to 60 s with
+no power notification keeps ownership. The guard no longer counts its own
+inventory time against the 5 s command age (total age still capped at 60 s), and
+that time no longer uses up the TV command and probe timeouts.
+
+Tests replay the gap lengths against a real session and a local WebSocket TV,
+with a scaled slow inventory. A real stall cannot be reproduced on demand, so
+hardware behaviour during one is unverified.
+

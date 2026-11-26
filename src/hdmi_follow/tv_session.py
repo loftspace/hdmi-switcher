@@ -24,6 +24,20 @@ PROBE_REPLY_TIMEOUT = 1.5
 LOG = logging.getLogger(__name__)
 
 
+def _check(current: Callable[[], bool], *budgets: asyncio.Timeout) -> bool:
+    """Run the blocking ownership check without charging its time to TV timeouts."""
+    clock = asyncio.get_running_loop().time
+    started = clock()
+    try:
+        return current()
+    finally:
+        spent = clock() - started
+        for budget in budgets:
+            deadline = budget.when()
+            if deadline is not None:
+                budget.reschedule(deadline + spent)
+
+
 class Session:
     """Serialize commands and discard the entire connection after interrupted IO."""
 
@@ -140,9 +154,14 @@ class Session:
         return self._proof is None or time.monotonic() - self._proof > PROOF_MAX_AGE
 
     async def _launch(
-        self, ws: ClientConnection, request_id: str, target: str, current: Callable[[], bool]
+        self,
+        ws: ClientConnection,
+        request_id: str,
+        target: str,
+        current: Callable[[], bool],
+        *budgets: asyncio.Timeout,
     ) -> None:
-        if not current():
+        if not _check(current, *budgets):
             raise tv.StaleRequest("USB ownership changed before the command was sent")
         LOG.info("TV switch send id=%s target=%s", request_id, target)
         await ws.send(
@@ -175,14 +194,14 @@ class Session:
         try:
             async with asyncio.timeout(COMMAND_TIMEOUT) as budget, self._lock:
                 acquired = True
-                if not current():
+                if not _check(current, budget):
                     raise tv.StaleRequest("USB ownership changed before the command was sent")
                 sent = False
                 if self._needs_probe():
                     assert self._ws is not None
                     try:
                         async with asyncio.timeout(PROBE_REPLY_TIMEOUT) as probe:
-                            await self._launch(self._ws, request_id, target, current)
+                            await self._launch(self._ws, request_id, target, current, budget, probe)
                         sent = True
                     except TimeoutError:
                         if not probe.expired():
@@ -198,13 +217,13 @@ class Session:
                         self._invalidate()
                         request_id = f"switch-{next(self._ids)}"
                         budget.reschedule(asyncio.get_running_loop().time() + COMMAND_TIMEOUT)
-                        if not current():
+                        if not _check(current, budget):
                             raise tv.StaleRequest(
                                 "USB ownership changed before the command was resent"
                             ) from None
                 if not sent:
                     ws = await self._ensure_connected()
-                    await self._launch(ws, request_id, target, current)
+                    await self._launch(ws, request_id, target, current, budget)
                 self._report_ready()
                 LOG.info(
                     "TV switch reply id=%s target=%s duration_ms=%.1f",
