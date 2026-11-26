@@ -10,9 +10,14 @@ class Transition:
 
 
 class OwnershipTracker:
-    def __init__(self, debounce: float = 1, resume_gap: float = 5) -> None:
+    def __init__(
+        self, debounce: float = 1, resume_gap: float = 5, stall_limit: float | None = None
+    ) -> None:
         self.debounce = debounce
         self.resume_gap = resume_gap
+        # Longest gap that keeps ownership. Pass it only when suspend is reported
+        # separately, through update(None); otherwise a gap may hide a sleep.
+        self.max_gap = resume_gap if stall_limit is None else max(resume_gap, stall_limit)
         self.stable: bool | None = None
         self.candidate: bool | None = None
         self.since = 0.0
@@ -20,7 +25,7 @@ class OwnershipTracker:
         self.generation = 0
 
     def update(self, present: bool | None, now: float) -> Transition | None:
-        gap = self.last is not None and not 0 <= now - self.last <= self.resume_gap
+        gap = self.last is not None and not 0 <= now - self.last <= self.max_gap
         self.last = now
         if present is None or gap:
             self.stable = None

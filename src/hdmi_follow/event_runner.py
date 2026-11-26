@@ -20,6 +20,10 @@ EVENT_SETTLE_WINDOW = 0.5
 EVENT_RECHECK_INTERVAL = 0.05
 HEARTBEAT_INTERVAL = 30.0
 SLOW_SAMPLE_THRESHOLD = 0.05
+# A gap up to this long with no suspend notification is a stall: keep the last
+# known ownership. Longest stall seen on 2026-11-26 was 30.9 s (issue #13).
+STALL_LIMIT = 60.0
+MAX_COMMAND_AGE = 5.0
 
 
 def event_current(
@@ -30,6 +34,7 @@ def event_current(
     power_revision: int,
     created: float,
     logged_rejections: set[str] | None = None,
+    inventory_seconds: list[float] | None = None,
 ) -> bool:
     """Fence suspend immediately, without depending on event-loop delivery order."""
 
@@ -54,7 +59,15 @@ def event_current(
                 logged_rejections.add(reason)
         return False
 
-    if not 0 <= time.time() - created <= 5:
+    # Time spent in this guard's own USB inventories is not staleness: each one
+    # ends in a fresh look at the hub. STALL_LIMIT still bounds the total age.
+    spent = inventory_seconds if inventory_seconds is not None else [0.0]
+
+    def stale() -> bool:
+        age = time.time() - created
+        return not (0 <= age <= STALL_LIMIT and age - spent[0] <= MAX_COMMAND_AGE)
+
+    if stale():
         return rejected("stale-age")
     if source.suspended:
         return rejected("suspended")
@@ -65,7 +78,9 @@ def event_current(
     for _ in range(2):
         revision = source.revision
         try:
+            started = time.time()
             observed = sample_ownership(config)
+            spent[0] += max(0.0, time.time() - started)
             matches = observed == event.present
         except Exception:
             return rejected("inventory-error")
@@ -77,7 +92,7 @@ def event_current(
             return rejected("suspended", observed)
         if source.power_revision != power_revision:
             return rejected("power-revision", observed)
-        if not 0 <= time.time() - created <= 5:
+        if stale():
             return rejected("stale-age", observed)
         if not tracker.current(event):
             return rejected("ownership-generation", observed)
@@ -111,9 +126,10 @@ async def run(
     last_present: bool | None = None
     have_inventory = False
     last_reset_reason: str | None = None
-    # Reconciliation supplies regular samples, so a long gap now indicates
-    # suspend or scheduler starvation even if the power notification was missed.
-    tracker = OwnershipTracker(config.debounce)
+    # Reconciliation supplies regular samples, and suspend arrives as a power
+    # revision. A gap up to STALL_LIMIT without one is a stall and keeps ownership;
+    # a longer one may be a suspend whose notification was missed.
+    tracker = OwnershipTracker(config.debounce, stall_limit=STALL_LIMIT)
 
     async def cancel(task: asyncio.Task[Any] | None) -> None:
         if task is not None:
@@ -227,7 +243,17 @@ async def run(
             LOG.warning("Recovery check found a missed or delayed hub transition")
         now = time.time()
         gap = None if tracker.last is None else now - tracker.last
-        if gap is not None and not 0 <= gap <= tracker.resume_gap:
+        if gap is not None and tracker.resume_gap < gap <= tracker.max_gap:
+            LOG.info(
+                "Sampling stall origin=%s elapsed=%.3fs prior_stable=%s prior_candidate=%s "
+                "generation=%s; ownership kept",
+                origin,
+                gap,
+                tracker.stable,
+                tracker.candidate,
+                tracker.generation,
+            )
+        if gap is not None and not 0 <= gap <= tracker.max_gap:
             LOG.info(
                 "Sampling gap origin=%s elapsed=%.3fs prior_stable=%s prior_candidate=%s "
                 "generation=%s; silent baseline reset",
@@ -261,11 +287,19 @@ async def run(
         if transition is not None:
             LOG.info("USB ownership %s", "acquired" if transition.present else "released")
             logged_rejections: set[str] = set()
+            inventory_seconds = [0.0]
 
             def current() -> bool:
                 assert source is not None
                 return event_current(
-                    tracker, transition, config, source, epoch, now, logged_rejections
+                    tracker,
+                    transition,
+                    config,
+                    source,
+                    epoch,
+                    now,
+                    logged_rejections,
+                    inventory_seconds,
                 )
 
             pending = asyncio.create_task(

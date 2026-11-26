@@ -189,6 +189,10 @@ connection avoids the first authentication handshake. After a disconnect or TV
 standby, the next command may need a fresh connection. Idle ping/pong checks run
 every five seconds; retries are bounded and canceled when ownership changes.
 Hub mode uses native suspend/resume notifications to reset its baseline silently.
+If the helper stalls for up to 60 seconds with no such notification, hub mode
+keeps the last known ownership and still follows a hub change. A longer gap
+resets the baseline. Time spent inside the hub check itself does not count
+against the command's age limit or the TV timeouts.
 HID enumeration failure or a long sleep/resume gap does the same in keyboard mode.
 This avoids stale takeovers but can intentionally miss a switch during recovery.
 The helper must be running on an awake computer to observe USB changes.
